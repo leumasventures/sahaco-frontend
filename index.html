@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sacred Heart College Eziukwu Aba - Official Website</title>
+
+    <!-- favicon -->
+    <link rel="shortcut icon" href="./favicon.svg" type="image/svg+xml" />
+
+    <!-- custom css link -->
+    <link rel="stylesheet" href="./assets/css/style.css" />
+
+    <!-- google font link -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- preload images -->
+    <link rel="preload" as="image" href="./assets/images/hero-banner.png" />
+    <link
+      rel="preload"
+      as="image"
+      href="./assets/images/hero-abs-1.png"
+      media="min-width(768px)"
+    />
+    <link
+      rel="preload"
+      as="image"
+      href="./assets/images/hero-abs-2.png"
+      media="min-width(768px)"
+    />
+  </head>
+
+  <body id="top">
+    <!-- HEADER -->
+
+    <header class="header" data-header>
+      <div class="container">
+        <h1>
+          <a href="#" class="logo">Sacred Heart College</a>
+        </h1>
+
+        <nav class="navbar" data-navbar>
+          <div class="navbar-top">
+            <a href="#" class="logo">Sacred Heart College</a>
+
+            <button
+              class="nav-close-btn"
+              aria-label="Close menu"
+              data-nav-toggler
+            >
+              <ion-icon name="close-outline"></ion-icon>
+            </button>
+          </div>
+
+          <ul class="navbar-list">
+            <li class="navbar-item">
+              <a href="#home" class="navbar-link" data-nav-toggler>Home</a>
+            </li>
+
+            <li class="navbar-item">
+              <a href="#about" class="navbar-link" data-nav-toggler>About</a>
+            </li>
+
+            <li class="navbar-item">
+              <a href="#benefits" class="navbar-link" data-nav-toggler
+                >Benefits</a
+              >
+            </li>
+
+            <li class="navbar-item">
+              <a href="#classes" class="navbar-link" data-nav-toggler
+                >Classes</a
+              >
+            </li>
+
+            <li class="navbar-item">
+              <a
+                href="#"
+                class="navbar-link"
+                data-nav-toggler
+                >Admissions</a
+              >
+            </li>
+          </ul>
+        </nav>
+
+        <div class="header-actions">
+          <button
+            class="header-action-btn"
+            aria-label="Open search"
+            data-search-toggler
+          >
+            <ion-icon name="search-outline"></ion-icon>
+          </button>
+
+          <a
+            href="tel:+234xxxxxxxxxx"
+            class="header-action-btn login-btn"
+          >
+            <ion-icon name="person-outline" aria-hidden="true"></ion-icon>
+
+            <span class="span">CONTACT US</span>
+          </a>
+
+          <button
+            class="header-action-btn nav-open-btn"
+            aria-label="Open menu"
+            data-nav-toggler
+          >
+            <ion-icon name="menu-outline"></ion-icon>
+          </button>
+        </div>
+
+        <div class="overlay" data-nav-toggler data-overlay></div>
+      </div>
+    </header>
+
+    <!-- SEARCH BOX -->
+
+    <div class="search-container" data-search-box>
+      <div class="container">
+        <button
+          class="search-close-btn"
+          aria-label="Close search"
+          data-search-toggler
+        >
+          <ion-icon name="close-outline"></ion-icon>
+        </button>
+
+        <div class="search-wrapper">
+          <input
+            type="search"
+            name="search"
+            placeholder="Search Here..."
+            aria-label="Search"
+            class="search-field"
+          />
+
+          <button class="search-submit" aria-label="Submit" data-search-toggler>
+            <ion-icon name="search-outline"></ion-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <main>
+      <article>
+        <!-- HERO -->
+
+        <section
+          class="hero"
+          id="home"
+          aria-label="hero"
+          style="background-image: url('./assets/images/hero-bg.jpg')"
+        >
+          <div class="container">
+            <div class="hero-content">
+              <p class="section-subtitle">Forming Minds in Truth & Charity</p>
+
+              <h2 class="h1 hero-title">Testimonium Perhibere Veritati</h2>
+
+              <p class="hero-text">
+                Sacred Heart College Eziukwu Aba (SAHARCO) is a missionary Catholic boys' secondary school established in 1957 by the Catholic Diocese (then under Most Rev. Joseph B. Whelan, C.S.Sp). Located in Aba, Abia State, Eastern Nigeria. Returned to the Catholic Diocese of Aba in 2012, it continues its legacy of academic excellence, discipline, moral formation, and all-round development of young men.
+              </p>
+
+              <a
+                href="https://saharco.com.ng/"
+                class="btn btn-primary"
+                target="_blank"
+              >
+                <span class="span">Explore School Life</span>
+
+                <ion-icon
+                  name="arrow-forward-outline"
+                  aria-hidden="true"
+                ></ion-icon>
+              </a>
+            </div>
+
+            <figure class="hero-banner">
+              <img
+                src="./assets/images/hero-banner.png"
+                width="500"
+                height="500"
+                loading="lazy"
+                alt="hero image"
+                class="w-100"
+              />
+
+              <img
+                src="./assets/images/hero-abs-1.png"
+                width="318"
+                height="352"
+                loading="lazy"
+                aria-hidden="true"
+                class="abs-img abs-img-1"
+              />
+
+              <img
+                src="./assets/images/hero-abs-2.png"
+                width="160"
+                height="160"
+                loading="lazy"
+                aria-hidden="true"
+                class="abs-img abs-img-2"
+              />
+            </figure>
+          </div>
+        </section>
+
+        <!-- ABOUT -->
+
+        <section class="section about" id="about" aria-label="about">
+          <div class="container">
+            <figure class="about-banner">
+              <img
+                src="./assets/images/illustration.webp"
+                width="450"
+                height="590"
+                loading="lazy"
+                alt="about banner"
+                class="w-100 about-img"
+              />
+
+              <img
+                src="./assets/images/illustration-2.avif"
+                width="188"
+                height="242"
+                loading="lazy"
+                aria-hidden="true"
+                class="abs-img abs-img-1"
+              />
+
+              <img
+                src="./assets/images/illus.avif"
+                width="150"
+                height="200"
+                loading="lazy"
+                aria-hidden="true"
+                class="abs-img abs-img-2"
+              />
+            </figure>
+
+            <div class="about-content">
+              <p class="section-subtitle">Who We Are</p>
+
+              <h2 class="h2 section-title">Forming Leaders in the Catholic Tradition</h2>
+
+              <ul class="about-list">
+                <li class="about-item">
+                  <div class="item-icon item-icon-1">
+                    <img
+                      src="./assets/images/about-icon-1.png"
+                      width="30"
+                      height="30"
+                      loading="lazy"
+                      aria-hidden="true"
+                    />
+                  </div>
+
+                  <div>
+                    <h3 class="h3 item-title">Dedicated & Qualified Educators</h3>
+
+                    <p class="item-text">
+                      Experienced teachers and priests committed to excellence and moral guidance.
+                    </p>
+                  </div>
+                </li>
+
+                <li class="about-item">
+                  <div class="item-icon item-icon-2">
+                    <img
+                      src="./assets/images/about-icon-2.png"
+                      width="30"
+                      height="30"
+                      loading="lazy"
+                      aria-hidden="true"
+                    />
+                  </div>
+
+                  <div>
+                    <h3 class="h3 item-title">Comprehensive Curriculum</h3>
+
+                    <p class="item-text">
+                      Nigerian curriculum with emphasis on sciences, arts, discipline and Catholic values.
+                    </p>
+                  </div>
+                </li>
+
+                <li class="about-item">
+                  <div class="item-icon item-icon-3">
+                    <img
+                      src="./assets/images/about-icon-3.png"
+                      width="30"
+                      height="30"
+                      loading="lazy"
+                      aria-hidden="true"
+                    />
+                  </div>
+
+                  <div>
+                    <h3 class="h3 item-title">Strong Student Community</h3>
+
+                    <p class="item-text">
+                      A disciplined brotherhood focused on academic success, sports, and character building.
+                    </p>
+                  </div>
+                </li>
+              </ul>
+
+              <a
+                href="https://saharco.com.ng/about-the-school"
+                class="btn btn-primary"
+                target="_blank"
+              >
+                <span class="span">Know About Us</span>
+
+                <ion-icon
+                  name="arrow-forward-outline"
+                  aria-hidden="true"
+                ></ion-icon>
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <!-- CATEGORY / BENEFITS -->
+
+        <section class="section category" id="benefits" aria-label="category">
+          <div class="container">
+            <p class="section-subtitle">
+              Benefits of Studying at Sacred Heart College
+            </p>
+
+            <h2 class="h2 section-title">
+              Key Areas of Formation & Excellence
+            </h2>
+
+            <ul class="grid-list">
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="school-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Academic Excellence</a>
+                    </h3>
+
+                    <span class="card-meta">Strong WAEC/NECO results</span>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="fitness-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Sports & Athletics</a>
+                    </h3>
+
+                    <span class="card-meta">Proud sporting tradition</span>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="heart-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Moral & Spiritual Growth</a>
+                    </h3>
+
+                    <span class="card-meta">Catholic values & discipline</span>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="people-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Boarding & Brotherhood</a>
+                    </h3>
+
+                    <span class="card-meta">Conducive boarding environment</span>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="book-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Science & Technology</a>
+                    </h3>
+
+                    <span class="card-meta">Well-equipped labs</span>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="category-card">
+                  <div class="card-icon">
+                    <ion-icon name="globe-outline"></ion-icon>
+                  </div>
+
+                  <div>
+                    <h3 class="h3 card-title">
+                      <a href="#">Leadership Training</a>
+                    </h3>
+
+                    <span class="card-meta">Preparing future leaders</span>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- COURSE / CLASSES -->
+
+        <section
+          class="section course"
+          id="classes"
+          aria-label="course"
+          style="background-image: url('./assets/images/course-bg.jpg')"
+        >
+          <div class="container">
+            <p class="section-subtitle">School Sections</p>
+
+            <h2 class="h2 section-title">Our Academic Structure</h2>
+
+            <ul class="grid-list">
+              <li>
+                <div class="course-card">
+                  <figure class="card-banner">
+                    <img
+                      src="./assets/images/1.png"
+                      width="370"
+                      height="270"
+                      loading="lazy"
+                      alt="Junior students"
+                      class="img-cover"
+                    />
+                  </figure>
+
+                  <div class="card-content">
+                    <h3 class="h3">
+                      <a href="#" class="card-title">Junior Secondary (JSS 1–3)</a>
+                    </h3>
+
+                    <p class="item-text">Foundation in core subjects with strong discipline and moral instruction.</p>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="course-card">
+                  <figure class="card-banner">
+                    <img
+                      src="./assets/images/2.png"
+                      width="370"
+                      height="270"
+                      loading="lazy"
+                      alt="Senior students"
+                      class="img-cover"
+                    />
+                  </figure>
+
+                  <div class="card-content">
+                    <h3 class="h3">
+                      <a href="#" class="card-title">Senior Secondary (SSS 1–3)</a>
+                    </h3>
+
+                    <p class="item-text">Preparation for WAEC, NECO, JAMB with science, commercial & arts streams.</p>
+                  </div>
+                </div>
+              </li>
+
+              <li>
+                <div class="course-card">
+                  <figure class="card-banner">
+                    <img
+                      src="./assets/images/3.png"
+                      width="370"
+                      height="270"
+                      loading="lazy"
+                      alt="Boarding life"
+                      class="img-cover"
+                    />
+                  </figure>
+
+                  <div class="card-content">
+                    <h3 class="h3">
+                      <a href="#" class="card-title">Boarding Facilities</a>
+                    </h3>
+
+                    <p class="item-text">Structured boarding life fostering independence, teamwork and responsibility.</p>
+                  </div>
+                </div>
+              </li>
+            </ul>
+
+            <a href="#" class="btn btn-primary">
+              <span class="span">All Students Follow the Full Academic Programme</span>
+
+              <ion-icon name="school-outline" aria-hidden="true"></ion-icon>
+            </a>
+          </div>
+        </section>
+
+        <!-- CTA -->
+
+        <section
+          class="section cta"
+          aria-label="admission"
+          style="background-image: url('./assets/images/cta-bg.png')"
+        >
+          <div class="container">
+            <figure class="cta-banner">
+              <img
+                src="./assets/images/9.webp"
+                width="580"
+                height="380"
+                loading="lazy"
+                alt="cta banner"
+                class="img-cover"
+              />
+            </figure>
+
+            <div class="cta-content">
+              <p class="section-subtitle">Admissions</p>
+
+              <h2 class="h2 section-title">Join Sacred Heart College Eziukwu Aba</h2>
+
+              <p class="section-text">
+                Be part of a legacy of excellence, discipline and Catholic formation. Contact the school for admission enquiries and entrance examination details.
+              </p>
+
+              <a
+                href="tel:+234xxxxxxxxxx"
+                class="btn btn-secondary"
+              >
+                <span class="span">Enquire About Admission</span>
+
+                <ion-icon
+                  name="arrow-forward-outline"
+                  aria-hidden="true"
+                ></ion-icon>
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <!-- NEWSLETTER / ENQUIRY -->
+
+        <section
+          class="section newsletter"
+          aria-label="enquiry"
+          style="background-image: url('./assets/images/newsletter-bg.jpg')"
+        >
+          <div class="container">
+            <p class="section-subtitle">
+              Admission Enquiry
+            </p>
+
+            <h2 class="h2 section-title">
+              Submit your contact details — we will get in touch with more information
+            </h2>
+
+            <!-- Replace action with real form endpoint if needed -->
+            <form
+              action="#"
+              method="POST"
+              class="newsletter-form"
+            >
+              <div class="input-wrapper">
+                <input
+                  type="tel"
+                  name="phone_number"
+                  aria-label="tel"
+                  placeholder="Enter your mobile number"
+                  required
+                  class="email-field"
+                />
+
+                <ion-icon
+                  name="call-outline"
+                  aria-hidden="true"
+                ></ion-icon>
+              </div>
+
+              <button type="submit" class="btn btn-primary">
+                <span class="span">Request Admission Info</span>
+
+                <ion-icon
+                  name="arrow-forward-outline"
+                  aria-hidden="true"
+                ></ion-icon>
+              </button>
+            </form>
+          </div>
+        </section>
+      </article>
+    </main>
+
+    <!-- FOOTER -->
+
+    <footer class="footer">
+      <div class="container">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <a href="#" class="logo">Sacred Heart College</a>
+
+            <p class="section-text">
+              A Catholic boys' secondary school committed to academic excellence, moral discipline, and forming responsible leaders for society.
+            </p>
+          </div>
+
+          <ul class="footer-list">
+            <li>
+              <p class="footer-list-title">Explore</p>
+            </li>
+
+            <li>
+              <a href="https://saharco.com.ng/about-the-school" class="footer-link">
+                <ion-icon name="chevron-forward" aria-hidden="true"></ion-icon>
+                <span class="span">About Us</span>
+              </a>
+            </li>
+
+            <li>
+              <a href="#" class="footer-link">
+                <ion-icon name="chevron-forward" aria-hidden="true"></ion-icon>
+                <span class="span">Admissions</span>
+              </a>
+            </li>
+
+            <li>
+              <a href="#" class="footer-link">
+                <ion-icon name="chevron-forward" aria-hidden="true"></ion-icon>
+                <span class="span">Gallery</span>
+              </a>
+            </li>
+          </ul>
+
+          <ul class="footer-list">
+            <li>
+              <p class="footer-list-title">Contact Info</p>
+            </li>
+
+            <li class="footer-item">
+              <ion-icon name="location-outline" aria-hidden="true"></ion-icon>
+
+              <address class="footer-link">
+                Eziukwu, Aba North L.G.A., Abia State, Nigeria
+              </address>
+            </li>
+
+            <li class="footer-item">
+              <ion-icon name="call" aria-hidden="true"></ion-icon>
+
+              <a href="tel:+234xxxxxxxxxx" class="footer-link"
+                >+234 XXX XXX XXXX</a
+              >
+            </li>
+
+            <li class="footer-item">
+              <ion-icon name="mail-outline" aria-hidden="true"></ion-icon>
+
+              <a href="mailto:info@saharco.com.ng" class="footer-link"
+                >info@saharco.com.ng</a
+              >
+            </li>
+          </ul>
+        </div>
+
+        <div class="footer-bottom">
+          <p class="copyright">
+            © Sacred Heart College Eziukwu Aba. Managed by Catholic Diocese of Aba.
+          </p>
+        </div>
+      </div>
+    </footer>
+
+    <!-- BACK TO TOP -->
+
+    <a
+      href="#top"
+      class="back-top-btn"
+      aria-label="Back to top"
+      data-back-top-btn
+    >
+      <ion-icon name="arrow-up"></ion-icon>
+    </a>
+
+    <!-- custom js link -->
+    <script src="./assets/js/script.js" defer></script>
+
+    <!-- ionicon link -->
+    <script
+      type="module"
+      src="https://unpkg.com/ionicons@5.5.2/dist/ionicons/ionicons.esm.js"
+    ></script>
+    <script
+      nomodule
+      src="https://unpkg.com/ionicons@5.5.2/dist/ionicons/ionicons.js"
+    ></script>
+  </body>
+</html>

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>School Portal • Sign In / Sign Up</title>
+
+  <style>
+    :root {
+      --primary: #4361ee;
+      --primary-dark: #3f37c9;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --radius: 12px;
+      --shadow: 0 10px 25px -5px rgba(0,0,0,0.08), 0 5px 10px -5px rgba(0,0,0,0.04);
+      --error: #ef4444;
+      --success: #10b981;
+      --google: #ffffff;
+      --google-text: #1f1f1f;
+      --google-border: #dadce0;
+      --ms: #2f2f2f;
+      --ms-hover: #1a1a1a;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --card: #1e293b;
+        --text: #f1f5f9;
+        --text-muted: #94a3b8;
+        --border: #334155;
+        --google: #303134;
+        --google-text: #e8eaed;
+        --google-border: #5f6368;
+      }
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+    }
+
+    .auth-container { width: 100%; max-width: 440px; }
+
+    .form-card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 2.5rem 2.2rem;
+      border: 1px solid var(--border);
+      transition: transform 0.25s ease;
+    }
+
+    .form-card:hover { transform: translateY(-4px); }
+
+    h1 { font-size: 1.9rem; font-weight: 700; text-align: center; margin-bottom: 0.4rem; }
+
+    .subtitle { text-align: center; color: var(--text-muted); margin-bottom: 1.6rem; font-size: 0.95rem; }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 1.8rem;
+      border-bottom: 2px solid var(--border);
+    }
+
+    .tab {
+      flex: 1;
+      padding: 1rem 0;
+      text-align: center;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      position: relative;
+    }
+
+    .tab.active {
+      color: var(--primary);
+    }
+
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: -2px; left: 0; right: 0;
+      height: 3px;
+      background: var(--primary);
+    }
+
+    .form-view { display: none; }
+
+    .form-view.active { display: block; }
+
+    .sso-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-bottom: 1.8rem;
+    }
+
+    .sso-btn {
+      width: 100%;
+      padding: 0.9rem;
+      border: 1px solid var(--google-border);
+      border-radius: var(--radius);
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.8rem;
+      background: var(--google);
+      color: var(--google-text);
+      transition: all 0.2s;
+    }
+
+    .sso-btn.microsoft {
+      background: var(--ms);
+      color: white;
+      border-color: transparent;
+    }
+
+    .sso-btn:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.1); transform: translateY(-1px); }
+
+    .sso-btn.microsoft:hover { background: var(--ms-hover); }
+
+    .sso-icon { width: 20px; height: 20px; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 1.6rem 0;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .divider span { padding: 0 1.2rem; }
+
+    .form-group { margin-bottom: 1.4rem; position: relative; }
+
+    label { display: block; margin-bottom: 0.5rem; font-size: 0.92rem; font-weight: 500; }
+
+    input, select {
+      width: 100%;
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: var(--bg);
+      color: var(--text);
+      transition: all 0.2s;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(67,97,238,0.15);
+    }
+
+    .password-wrapper { position: relative; }
+
+    .toggle-password {
+      position: absolute;
+      right: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.25rem;
+    }
+
+    .password-strength {
+      height: 4px;
+      margin-top: 0.5rem;
+      border-radius: 4px;
+      background: #e5e7eb;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+
+    .password-strength-bar {
+      height: 100%;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+
+    .strength-weak  { background: var(--error); width: 25%; }
+    .strength-fair  { background: #f59e0b; width: 50%; }
+    .strength-good  { background: #3b82f6; width: 75%; }
+    .strength-strong{ background: var(--success); width: 100%; }
+
+    .form-options {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 1rem 0 1.4rem;
+      font-size: 0.9rem;
+    }
+
+    .remember-group { display: flex; align-items: center; gap: 0.5rem; }
+
+    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; accent-color: var(--primary); }
+
+    .terms { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.8rem; }
+
+    .terms a { color: var(--primary); text-decoration: none; }
+
+    .terms a:hover { text-decoration: underline; }
+
+    .btn {
+      width: 100%;
+      padding: 1rem;
+      border-radius: var(--radius);
+      font-size: 1.05rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.22s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+      border: none;
+    }
+
+    .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1.5px); }
+
+    .btn.loading { pointer-events: none; opacity: 0.85; }
+
+    .btn.loading::after {
+      content: '';
+      width: 18px; height: 18px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-message {
+      color: var(--error);
+      font-size: 0.82rem;
+      margin-top: 0.35rem;
+      display: none;
+    }
+
+    .error-message.show { display: block; }
+
+    .switch-link { text-align: center; margin-top: 1.3rem; font-size: 0.95rem; }
+
+    .switch-link a { color: var(--primary); text-decoration: none; font-weight: 500; }
+
+    .switch-link a:hover { text-decoration: underline; }
+
+    @media (max-width: 480px) {
+      .form-card { padding: 2rem 1.6rem; }
+      h1 { font-size: 1.7rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="auth-container">
+    <div class="form-card">
+      <h1 id="auth-title">Welcome Back</h1>
+      <p class="subtitle" id="auth-subtitle">Sign in to your school portal</p>
+
+      <div class="tabs">
+        <div class="tab active" data-view="login">Sign In</div>
+        <div class="tab" data-view="signup">Sign Up</div>
+      </div>
+
+      <!-- SSO (shown in both views) -->
+      <div class="sso-buttons">
+        <button type="button" class="sso-btn" id="google-btn">
+          <svg class="sso-icon" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.51h5.84c-.25 1.31-.98 2.42-2.07 3.16v2.63h3.35c1.96-1.81 3.09-4.47 3.09-7.25z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-1.01 7.28-2.74l-3.35-2.63c-1.01.68-2.29 1.08-3.93 1.08-3.02 0-5.58-2.04-6.49-4.79H.96v2.67C2.77 20.39 6.62 23 12 23z"/><path fill="#FBBC05" d="M5.51 14.21c-.23-.68-.36-1.41-.36-2.21s.13-1.53.36-2.21V7.34H.96C.35 8.85 0 10.39 0 12s.35 3.15.96 4.66l4.55-2.45z"/><path fill="#EA4335" d="M12 4.98c1.64 0 3.11.56 4.27 1.66l3.19-3.19C17.46 1.01 14.97 0 12 0 6.62 0 2.77 2.61.96 6.34l4.55 2.45C6.42 6.02 8.98 4.98 12 4.98z"/></svg>
+          Continue with Google
+        </button>
+        <button type="button" class="sso-btn microsoft" id="ms-btn">
+          <svg class="sso-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M2 2h10v10H2V2zm10 0h10v10H12V2zM2 12h10v10H2V12zm10 0h10v10H12V12z"/></svg>
+          Continue with Microsoft
+        </button>
+      </div>
+
+      <div class="divider"><span>or</span></div>
+
+      <!-- Login View -->
+      <div id="login-view" class="form-view active">
+        <form id="login-form" novalidate>
+          <div class="form-group">
+            <label for="login-role">Role</label>
+            <select id="login-role" name="role" required>
+              <option value="" disabled selected>Select your role</option>
+              <option value="admin">Admin</option>
+              <option value="teacher">Teacher</option>
+              <option value="parent">Parent</option>
+            </select>
+            <div class="error-message" id="login-role-error">Please select a role</div>
+          </div>
+
+          <div class="form-group">
+            <label for="login-username">Username / Email</label>
+            <input type="text" id="login-username" name="username" required placeholder="admin / name@school.edu" autocomplete="username email" autofocus>
+            <div class="error-message" id="login-username-error">Please enter your username or email</div>
+          </div>
+
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <div class="password-wrapper">
+              <input type="password" id="login-password" name="password" required autocomplete="current-password" placeholder="••••••••">
+              <button type="button" class="toggle-password" aria-label="Toggle password visibility">👁</button>
+            </div>
+            <div class="error-message" id="login-password-error">Please enter your password</div>
+          </div>
+
+          <div class="form-options">
+            <div class="remember-group">
+              <input type="checkbox" id="remember" name="remember">
+              <label for="remember">Remember me</label>
+            </div>
+            <a href="#" class="forgot">Forgot password?</a>
+          </div>
+
+          <button type="submit" class="btn btn-primary" id="login-btn">Sign In</button>
+        </form>
+
+        <div class="switch-link">
+          New here? <a href="#" data-switch="signup">Create an account</a>
+        </div>
+      </div>
+
+      <!-- Signup View -->
+      <div id="signup-view" class="form-view">
+        <form id="signup-form" novalidate>
+          <div class="form-group">
+            <label for="signup-role">Role</label>
+            <select id="signup-role" name="role" required>
+              <option value="" disabled selected>Select your role</option>
+              <option value="teacher">Teacher</option>
+              <option value="parent">Parent</option>
+            </select>
+            <div class="error-message" id="signup-role-error">Please select a role</div>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-name">Full Name</label>
+            <input type="text" id="signup-name" name="name" required placeholder="John Doe" autocomplete="name">
+            <div class="error-message" id="signup-name-error">Please enter your full name</div>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-email">Email</label>
+            <input type="email" id="signup-email" name="email" required placeholder="name@school.edu" autocomplete="email">
+            <div class="error-message" id="signup-email-error">Please enter a valid email</div>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-password">Password</label>
+            <div class="password-wrapper">
+              <input type="password" id="signup-password" name="password" required autocomplete="new-password" placeholder="••••••••">
+              <button type="button" class="toggle-password" aria-label="Toggle password visibility">👁</button>
+            </div>
+            <div class="password-strength"><div id="strength-bar" class="password-strength-bar"></div></div>
+            <div class="error-message" id="signup-password-error">Please enter a password</div>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-confirm">Confirm Password</label>
+            <input type="password" id="signup-confirm" name="confirm" required placeholder="••••••••" autocomplete="new-password">
+            <div class="error-message" id="signup-confirm-error">Passwords do not match</div>
+          </div>
+
+          <div class="terms">
+            <input type="checkbox" id="terms" name="terms" required>
+            <label for="terms">
+              I agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+            </label>
+            <div class="error-message" id="terms-error" style="margin-top:0.4rem;">You must agree to continue</div>
+          </div>
+
+          <button type="submit" class="btn btn-primary" id="signup-btn">Create Account</button>
+        </form>
+
+        <div class="switch-link">
+          Already have an account? <a href="#" data-switch="login">Sign in</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="login.js"></script>
+
+  
+</body>
+</html>

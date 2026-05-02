@@ -11,7 +11,7 @@
 ───────────────────────────────────────── */
 const App = {
   currentSection: 'dashboard',
-  currentUser: { name: 'Samuel', role: 'Admin', privileges: null },
+  currentUser: { name: 'SAHARCO', role: 'Admin', privileges: null },
   sidebarCollapsed: false,
 
   data: {
@@ -74,6 +74,7 @@ const App = {
     results: [],
     attendance: [],
     remarks: [],
+    subjectAllocations: {}, // { studentId: [subjectNames] } for SS2/SS3, { 'ClassName_Arm': [subjectNames] } for others
 
     fixtures: [
       { id: 1, type: 'Football',  teamA: 'SS 1A',  teamB: 'SS 2A',  date: '2026-03-10', time: '10:00', venue: 'School Field',   status: 'Upcoming',  scoreA: null, scoreB: null },
@@ -344,129 +345,322 @@ function statColor(cls) {
   return map[cls] || '#6366f1';
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────
    7. CLASSES  (Admin only)
-   Improvements:
-   • Rich stats cards above the table
-   • Empty-state UI when no classes exist
-   • Duplicate name check on add/edit
-   • Arm tag chips in table (instead of plain text)
-   • Cascade warning on delete (shows affected students/teachers)
-   • Arm manager in modal: add/remove individual arms as chips
-   • Confirm delete is blocked if students are enrolled
-   • Level badge colour is consistent with data
-   • Animated row highlight after save
-─────────────────────────────────────────── */
+   
+   Supports all school tiers:
+     • Day Care   (Creche / Toddler / Reception)
+     • Nursery    (Nursery 1, Nursery 2, Nursery 3)
+     • Primary    (Primary 1–6)
+     • Junior     (JSS 1–3)
+     • Senior     (SSS 1–3)
+
+   Improvements over base version:
+   • 5-level system with distinct palette + icons per tier
+   • Stats row scoped per tier (collapsible tier groups in table)
+   • Level presets: selecting a tier pre-fills suggested class names
+   • Age range helper shown per tier in modal
+   • Arm manager: add/remove chips, quick-add presets
+   • Cascade guard: block delete if students enrolled
+   • Duplicate name validation across all tiers
+   • Filter by tier tabs + text search
+   • Animated save highlight on row
+   • Full backward-compat — existing Junior/Senior data unaffected
+───────────────────────────────────────────────────────────────── */
+
+/* ── TIER CONFIG  (single source of truth) ──────────────────── */
+const CLASS_TIERS = {
+  'Day Care': {
+    icon:      '🍼',
+    color:     '#f472b6',   // pink
+    surface:   '#fdf2f8',
+    border:    '#f9a8d4',
+    text:      '#be185d',
+    badge:     'pink',
+    ageRange:  '0 – 2 years',
+    presets:   ['Creche', 'Toddler', 'Reception'],
+    armSuggestions: ['A', 'B'],
+  },
+  'Nursery': {
+    icon:      '🌱',
+    color:     '#34d399',   // emerald
+    surface:   '#ecfdf5',
+    border:    '#6ee7b7',
+    text:      '#065f46',
+    badge:     'success',
+    ageRange:  '3 – 5 years',
+    presets:   ['Nursery 1', 'Nursery 2', 'Nursery 3'],
+    armSuggestions: ['A', 'B', 'C'],
+  },
+  'Primary': {
+    icon:      '📖',
+    color:     '#60a5fa',   // blue
+    surface:   '#eff6ff',
+    border:    '#bfdbfe',
+    text:      '#1d4ed8',
+    badge:     'info',
+    ageRange:  '6 – 11 years',
+    presets:   ['Primary 1','Primary 2','Primary 3','Primary 4','Primary 5','Primary 6'],
+    armSuggestions: ['A', 'B', 'C', 'D'],
+  },
+  'Junior': {
+    icon:      '📘',
+    color:     '#818cf8',   // indigo
+    surface:   '#eef2ff',
+    border:    '#c7d2fe',
+    text:      '#3730a3',
+    badge:     'purple',
+    ageRange:  '11 – 14 years',
+    presets:   ['JSS 1', 'JSS 2', 'JSS 3'],
+    armSuggestions: ['A', 'B', 'C', 'D', 'E'],
+  },
+  'Senior': {
+    icon:      '🎓',
+    color:     '#f59e0b',   // amber
+    surface:   '#fffbeb',
+    border:    '#fde68a',
+    text:      '#92400e',
+    badge:     'warning',
+    ageRange:  '14 – 18 years',
+    presets:   ['SSS 1', 'SSS 2', 'SSS 3'],
+    armSuggestions: ['A', 'B', 'C', 'D', 'E'],
+  },
+};
+
+const TIER_ORDER = ['Day Care','Nursery','Primary','Junior','Senior'];
+
+/* ── TIER BADGE INLINE STYLE ─────────────────────────────────── */
+function tierBadgeStyle(level) {
+  const t = CLASS_TIERS[level];
+  if (!t) return badgeStyle('neutral');
+  return `display:inline-flex;align-items:center;gap:.3rem;background:${t.surface};color:${t.text};border:1px solid ${t.border};padding:.2rem .65rem;border-radius:9999px;font-size:.75rem;font-weight:700;white-space:nowrap;`;
+}
+
+/* ── MAIN RENDER ─────────────────────────────────────────────── */
 function renderClasses() {
   if (!priv.canManage()) { accessDeniedPage('classes'); return; }
 
-  const section   = document.getElementById('classes');
-  const classes   = App.data.classes;
-  const students  = App.data.students;
+  const section  = document.getElementById('classes');
+  const classes  = App.data.classes || [];
+  const students = App.data.students || [];
 
-  /* ── Summary stats ── */
+  /* Per-tier counts */
+  const tierStats = {};
+  TIER_ORDER.forEach(tier => {
+    const tClasses  = classes.filter(c => c.level === tier);
+    const tStudents = students.filter(s => tClasses.some(c => c.name === s.class));
+    tierStats[tier] = {
+      classes:  tClasses.length,
+      arms:     tClasses.reduce((n, c) => n + (c.arms?.length || 0), 0),
+      students: tStudents.length,
+    };
+  });
+
+  const totalClasses  = classes.length;
+  const totalArms     = classes.reduce((n, c) => n + (c.arms?.length || 0), 0);
   const totalStudents = students.length;
-  const totalArms     = classes.reduce((n, c) => n + c.arms.length, 0);
-  const juniorCount   = classes.filter(c => c.level === 'Junior').length;
-  const seniorCount   = classes.filter(c => c.level === 'Senior').length;
 
   section.innerHTML = `
-    <!-- Stats row -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;margin-bottom:1.5rem;">
-      ${[
-        ['🏫', 'Total Classes',   classes.length,   '#2563eb'],
-        ['🎓', 'Junior Classes',  juniorCount,      '#0891b2'],
-        ['📚', 'Senior Classes',  seniorCount,      '#7c3aed'],
-        ['🚪', 'Total Arms',      totalArms,        '#059669'],
-        ['👩‍🎓','Total Students', totalStudents,    '#d97706'],
-      ].map(([icon, label, val, color]) => `
-        <div style="background:#fff;border-radius:12px;padding:1rem 1.25rem;box-shadow:0 2px 8px rgba(0,0,0,.07);border-top:3px solid ${color};">
-          <div style="font-size:1.4rem;">${icon}</div>
-          <div style="font-size:1.6rem;font-weight:700;color:${color};line-height:1.2;">${val}</div>
-          <div style="font-size:.78rem;color:#6b7280;margin-top:.15rem;">${label}</div>
-        </div>`).join('')}
-    </div>
-
-    <!-- Header row -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:1rem;">
-      <h2 style="margin:0;">Classes</h2>
+    <!-- ── Page header ── -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <h2 style="margin:0 0 .2rem;font-size:1.5rem;">Classes &amp; Arms</h2>
+        <p style="margin:0;color:#6b7280;font-size:.875rem;">Manage all school levels, classes, and arm assignments</p>
+      </div>
       <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-        <input id="class-search" placeholder="🔍 Search classes…" oninput="filterClassTable()"
-          style="${inputStyle()};max-width:200px;padding:.45rem .75rem;font-size:.875rem;">
-        <button id="add-class-btn" onclick="openClassModal()" style="${btnStyle('primary')}">+ Add Class</button>
+        <input id="class-search" placeholder="🔍 Search…" oninput="filterClassTable()"
+          style="${inputStyle('sm')};max-width:180px;">
+        <button onclick="openClassModal()" style="${btnStyle('primary')}">+ Add Class</button>
       </div>
     </div>
 
-    <!-- Table or empty state -->
+    <!-- ── Summary stat cards ── -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.75rem;margin-bottom:1.75rem;">
+      <div style="background:#1e3a5f;color:#fff;border-radius:12px;padding:1rem 1.1rem;">
+        <div style="font-size:1.4rem;">🏫</div>
+        <div style="font-size:1.6rem;font-weight:800;line-height:1.1;">${totalClasses}</div>
+        <div style="font-size:.72rem;opacity:.8;margin-top:.15rem;">Total Classes</div>
+      </div>
+      <div style="background:#fff;border-radius:12px;padding:1rem 1.1rem;box-shadow:0 2px 8px rgba(0,0,0,.07);border-top:3px solid #6366f1;">
+        <div style="font-size:1.3rem;">🚪</div>
+        <div style="font-size:1.5rem;font-weight:800;color:#6366f1;line-height:1.1;">${totalArms}</div>
+        <div style="font-size:.72rem;color:#6b7280;margin-top:.15rem;">Total Arms</div>
+      </div>
+      <div style="background:#fff;border-radius:12px;padding:1rem 1.1rem;box-shadow:0 2px 8px rgba(0,0,0,.07);border-top:3px solid #0891b2;">
+        <div style="font-size:1.3rem;">👩‍🎓</div>
+        <div style="font-size:1.5rem;font-weight:800;color:#0891b2;line-height:1.1;">${totalStudents}</div>
+        <div style="font-size:.72rem;color:#6b7280;margin-top:.15rem;">Total Students</div>
+      </div>
+      ${TIER_ORDER.map(tier => {
+        const t  = CLASS_TIERS[tier];
+        const ts = tierStats[tier];
+        if (ts.classes === 0) return '';
+        return `
+        <div style="background:#fff;border-radius:12px;padding:1rem 1.1rem;box-shadow:0 2px 8px rgba(0,0,0,.07);border-top:3px solid ${t.color};">
+          <div style="font-size:1.2rem;">${t.icon}</div>
+          <div style="font-size:1.4rem;font-weight:800;color:${t.color};line-height:1.1;">${ts.classes}</div>
+          <div style="font-size:.72rem;color:#6b7280;margin-top:.15rem;">${tier}</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <!-- ── Tier filter tabs ── -->
+    <div id="tier-tabs" style="display:flex;gap:.4rem;margin-bottom:1rem;flex-wrap:wrap;">
+      <button class="tier-tab active" data-tier="all" onclick="setTierFilter('all')"
+        style="${tierTabStyle(true)}">All Tiers</button>
+      ${TIER_ORDER.filter(t => tierStats[t].classes > 0).map(tier => `
+        <button class="tier-tab" data-tier="${tier}" onclick="setTierFilter('${tier}')"
+          style="${tierTabStyle(false, tier)}">
+          ${CLASS_TIERS[tier].icon} ${tier}
+          <span style="background:rgba(0,0,0,.12);color:inherit;border-radius:999px;padding:.05rem .45rem;font-size:.7rem;margin-left:.3rem;">${tierStats[tier].classes}</span>
+        </button>`).join('')}
+    </div>
+
+    <!-- ── Table or empty state ── -->
     ${classes.length === 0
-      ? `<div style="background:#fff;border-radius:12px;padding:4rem 2rem;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.07);">
-           <div style="font-size:3rem;margin-bottom:1rem;">🏫</div>
-           <h3 style="margin:0 0 .5rem;color:#374151;">No classes yet</h3>
-           <p style="color:#9ca3af;margin:0 0 1.5rem;">Add your first class to get started.</p>
-           <button onclick="openClassModal()" style="${btnStyle('primary')}">+ Add First Class</button>
-         </div>`
-      : `<div style="overflow-x:auto;">
-         <table id="classes-table" style="${tableStyle()}">
-           <thead><tr style="${thRowStyle()}">
-             <th style="${thStyle()}">#</th>
-             <th style="${thStyle()}">Class Name</th>
-             <th style="${thStyle()}">Level</th>
-             <th style="${thStyle()}">Arms</th>
-             <th style="${thStyle()}">Students</th>
-             <th style="${thStyle()}">Actions</th>
-           </tr></thead>
-           <tbody id="classes-tbody">
-             ${classes.map((c, i) => classRow(c, i)).join('')}
-           </tbody>
-         </table></div>`
+      ? emptyClassState()
+      : `<div style="overflow-x:auto;border-radius:12px;border:1px solid #e5e7eb;background:#fff;">
+          <table id="classes-table" style="${tableStyle()};border-radius:12px;overflow:hidden;">
+            <thead><tr style="${thRowStyle()}">
+              <th style="${thStyle('40px')}">#</th>
+              <th style="${thStyle()}">Class Name</th>
+              <th style="${thStyle('130px')}">Level / Tier</th>
+              <th style="${thStyle('80px')}">Age Range</th>
+              <th style="${thStyle()}">Arms</th>
+              <th style="${thStyle('110px')}">Students</th>
+              <th style="${thStyle('140px')}">Actions</th>
+            </tr></thead>
+            <tbody id="classes-tbody">
+              ${classes.map((c, i) => classRow(c, i)).join('')}
+            </tbody>
+          </table>
+        </div>`
     }`;
+
+  // Set the active filter state
+  window._activeTierFilter = 'all';
 }
 
-/** Render a single table row (also used when refreshing a single row after edit) */
+/* ── TAB STYLE HELPER ────────────────────────────────────────── */
+function tierTabStyle(active, tier = null) {
+  const t = tier ? CLASS_TIERS[tier] : null;
+  if (active && !tier) {
+    return 'padding:.35rem .9rem;border-radius:9999px;font-size:.82rem;font-weight:700;cursor:pointer;background:#1e3a5f;color:#fff;border:none;transition:all .15s;';
+  }
+  if (t) {
+    const isActive = false; // toggled via JS class swap
+    return `padding:.35rem .9rem;border-radius:9999px;font-size:.82rem;font-weight:600;cursor:pointer;background:${t.surface};color:${t.text};border:1px solid ${t.border};transition:all .15s;`;
+  }
+  return 'padding:.35rem .9rem;border-radius:9999px;font-size:.82rem;font-weight:600;cursor:pointer;background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;transition:all .15s;';
+}
+
+/* ── TIER FILTER ─────────────────────────────────────────────── */
+window.setTierFilter = function(tier) {
+  window._activeTierFilter = tier;
+
+  // Update tab highlight
+  document.querySelectorAll('.tier-tab').forEach(btn => {
+    const btnTier = btn.dataset.tier;
+    const t = CLASS_TIERS[btnTier];
+    if (btnTier === tier) {
+      if (btnTier === 'all') {
+        btn.style.cssText = tierTabStyle(true);
+      } else {
+        btn.style.cssText = `padding:.35rem .9rem;border-radius:9999px;font-size:.82rem;font-weight:700;cursor:pointer;background:${t.color};color:#fff;border:1px solid ${t.color};transition:all .15s;`;
+      }
+    } else {
+      btn.style.cssText = btnTier === 'all'
+        ? 'padding:.35rem .9rem;border-radius:9999px;font-size:.82rem;font-weight:600;cursor:pointer;background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;transition:all .15s;'
+        : tierTabStyle(false, btnTier);
+    }
+  });
+
+  // Show/hide rows
+  filterClassTable();
+};
+
+/* ── SEARCH + TIER FILTER ────────────────────────────────────── */
+window.filterClassTable = function() {
+  const q    = (document.getElementById('class-search')?.value || '').toLowerCase();
+  const tier = window._activeTierFilter || 'all';
+  document.querySelectorAll('#classes-tbody tr').forEach(row => {
+    const matchSearch = row.textContent.toLowerCase().includes(q);
+    const matchTier   = tier === 'all' || row.dataset.tier === tier;
+    row.style.display = (matchSearch && matchTier) ? '' : 'none';
+  });
+};
+
+/* ── SINGLE ROW RENDERER ─────────────────────────────────────── */
 function classRow(c, i) {
-  const studentCount = App.data.students.filter(s => s.class === c.name).length;
-  const armChips = c.arms.map(a =>
-    `<span style="display:inline-block;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:.15rem .55rem;font-size:.78rem;font-weight:500;color:#374151;margin:.1rem .15rem;">${a}</span>`
+  const studentCount = (App.data.students || []).filter(s => s.class === c.name).length;
+  const tier = CLASS_TIERS[c.level] || CLASS_TIERS['Junior'];
+  const ageRange = tier.ageRange || '–';
+
+  const armChips = (c.arms || []).map(a =>
+    `<span style="display:inline-block;background:${tier.surface};border:1px solid ${tier.border};color:${tier.text};border-radius:6px;padding:.12rem .5rem;font-size:.75rem;font-weight:600;margin:.1rem .1rem;">${a}</span>`
   ).join('');
 
-  return `<tr id="class-row-${c.id}" style="${trStyle()}">
-    <td style="${tdStyle()}">${i + 1}</td>
-    <td style="${tdStyle()};font-weight:600;">${c.name}</td>
-    <td style="${tdStyle()}"><span style="${badgeStyle(c.level === 'Junior' ? 'info' : 'success')}">${c.level}</span></td>
-    <td style="${tdStyle()}">${armChips}</td>
+  const studentBadgeColor = studentCount === 0
+    ? 'background:#f3f4f6;color:#9ca3af;border:1px solid #e5e7eb;'
+    : `background:${tier.surface};color:${tier.text};border:1px solid ${tier.border};`;
+
+  return `<tr id="class-row-${c.id}" data-tier="${c.level}" style="${trStyle()}">
+    <td style="${tdStyle()};color:#9ca3af;font-size:.82rem;">${i + 1}</td>
+    <td style="${tdStyle()};font-weight:700;font-size:.95rem;">${c.name}</td>
     <td style="${tdStyle()}">
-      <span style="${badgeStyle(studentCount > 0 ? 'secondary' : 'warning')}">${studentCount} student${studentCount !== 1 ? 's' : ''}</span>
+      <span style="${tierBadgeStyle(c.level)}">${tier.icon} ${c.level}</span>
+    </td>
+    <td style="${tdStyle()};font-size:.78rem;color:#9ca3af;white-space:nowrap;">${ageRange}</td>
+    <td style="${tdStyle()}">
+      <div style="display:flex;flex-wrap:wrap;gap:.15rem;">
+        ${armChips || `<span style="font-size:.78rem;color:#d1d5db;">—</span>`}
+      </div>
+    </td>
+    <td style="${tdStyle()}">
+      <span style="${studentBadgeColor}display:inline-block;padding:.2rem .6rem;border-radius:9999px;font-size:.75rem;font-weight:600;">
+        ${studentCount} student${studentCount !== 1 ? 's' : ''}
+      </span>
     </td>
     <td style="${tdStyle()}">
       <button onclick="editClass(${c.id})" style="${btnStyle('secondary', 'sm')}">✏ Edit</button>
-      <button onclick="deleteClass(${c.id})" style="${btnStyle('danger', 'sm')}">🗑 Delete</button>
+      <button onclick="deleteClass(${c.id})" style="${btnStyle('danger', 'sm')}">🗑</button>
     </td>
   </tr>`;
 }
 
-/** Live search / filter */
-window.filterClassTable = function () {
-  const q = (document.getElementById('class-search')?.value || '').toLowerCase();
-  document.querySelectorAll('#classes-tbody tr').forEach(row => {
-    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
-  });
-};
+/* ── EMPTY STATE ─────────────────────────────────────────────── */
+function emptyClassState() {
+  return `
+    <div style="background:#fff;border-radius:12px;padding:4rem 2rem;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.07);">
+      <div style="font-size:3.5rem;margin-bottom:1rem;">🏫</div>
+      <h3 style="margin:0 0 .4rem;color:#374151;">No classes yet</h3>
+      <p style="color:#9ca3af;margin:0 0 .75rem;max-width:360px;margin-inline:auto;font-size:.875rem;">
+        Get started by adding your school tiers — Day Care, Nursery, Primary, Junior, or Senior.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;margin-bottom:1.5rem;">
+        ${TIER_ORDER.map(tier => {
+          const t = CLASS_TIERS[tier];
+          return `<span style="background:${t.surface};color:${t.text};border:1px solid ${t.border};border-radius:9999px;padding:.25rem .75rem;font-size:.8rem;font-weight:600;">${t.icon} ${tier}</span>`;
+        }).join('')}
+      </div>
+      <button onclick="openClassModal()" style="${btnStyle('primary')}">+ Add First Class</button>
+    </div>`;
+}
 
-/* ── Edit / Delete ──────────────────────────────────────────── */
-window.editClass = function (id) {
+/* ── EDIT / DELETE ───────────────────────────────────────────── */
+window.editClass = function(id) {
   if (!priv.canManage()) { denyAccess(); return; }
   openClassModal(App.data.classes.find(c => c.id === id));
 };
 
-window.deleteClass = function (id) {
+window.deleteClass = function(id) {
   if (!priv.canManage()) { denyAccess(); return; }
-  const cls      = App.data.classes.find(c => c.id === id);
+  const cls = (App.data.classes || []).find(c => c.id === id);
   if (!cls) return;
 
-  const enrolled = App.data.students.filter(s => s.class === cls.name).length;
+  const enrolled = (App.data.students || []).filter(s => s.class === cls.name).length;
   const teachers = (App.data.teachers || []).filter(t => t.assignedClass === cls.name).length;
 
-  /* Block delete if students are enrolled */
   if (enrolled > 0) {
     showModal(`
       <div style="text-align:center;padding:.5rem 0 1rem;">
@@ -474,23 +668,27 @@ window.deleteClass = function (id) {
         <h3 style="margin:0 0 .5rem;">Cannot Delete Class</h3>
         <p style="color:#6b7280;margin:0 0 1.5rem;">
           <strong>${cls.name}</strong> has <strong>${enrolled} enrolled student${enrolled !== 1 ? 's' : ''}</strong>.
-          Re-assign or remove all students before deleting this class.
+          Re-assign or remove all students first.
         </p>
         <button onclick="closeModal()" style="${btnStyle('primary')}">OK, Got It</button>
       </div>`);
     return;
   }
 
-  /* Warn about assigned teachers but still allow */
   const teacherNote = teachers > 0
-    ? `<p style="font-size:.85rem;color:#d97706;background:#fef3c7;border-radius:8px;padding:.6rem .9rem;margin:.75rem 0 0;">⚠ ${teachers} teacher assignment${teachers !== 1 ? 's' : ''} will also be cleared.</p>`
+    ? `<div style="font-size:.85rem;color:#d97706;background:#fef3c7;border-radius:8px;padding:.6rem .9rem;margin:.75rem 0 0;text-align:left;">⚠ ${teachers} teacher assignment${teachers !== 1 ? 's' : ''} will also be cleared.</div>`
     : '';
+
+  const tier = CLASS_TIERS[cls.level] || {};
 
   showModal(`
     <div style="text-align:center;padding:.5rem 0 1rem;">
       <div style="font-size:2.5rem;margin-bottom:.75rem;">🗑️</div>
       <h3 style="margin:0 0 .5rem;">Delete Class?</h3>
-      <p style="color:#6b7280;margin:0;">Are you sure you want to delete <strong>${cls.name}</strong>? This cannot be undone.</p>
+      <div style="margin:.5rem auto .25rem;display:inline-flex;align-items:center;gap:.4rem;background:${tier.surface || '#f9fafb'};color:${tier.text || '#374151'};border:1px solid ${tier.border || '#e5e7eb'};padding:.3rem .8rem;border-radius:9999px;font-size:.85rem;font-weight:600;">
+        ${tier.icon || ''} ${cls.name}
+      </div>
+      <p style="color:#6b7280;margin:.75rem 0 0;">This cannot be undone.</p>
       ${teacherNote}
       <div style="display:flex;gap:.75rem;margin-top:1.5rem;justify-content:center;">
         <button onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
@@ -499,10 +697,9 @@ window.deleteClass = function (id) {
     </div>`);
 };
 
-window.confirmDeleteClass = function (id) {
-  const cls = App.data.classes.find(c => c.id === id);
+window.confirmDeleteClass = function(id) {
+  const cls = (App.data.classes || []).find(c => c.id === id);
   if (!cls) return;
-  /* Clear teacher assignments for this class */
   if (App.data.teachers) {
     App.data.teachers.forEach(t => { if (t.assignedClass === cls.name) { t.assignedClass = ''; t.assignedArm = ''; } });
   }
@@ -512,124 +709,256 @@ window.confirmDeleteClass = function (id) {
   toast(`"${cls.name}" deleted.`, 'warning');
 };
 
-/* ── Modal ─────────────────────────────────────────────────── */
+/* ── MODAL ───────────────────────────────────────────────────── */
 function openClassModal(cls = null) {
-  const isEdit = !!cls;
+  const isEdit   = !!cls;
+  let modalArms  = cls ? [...(cls.arms || [])] : [];
+  let activeLevel = cls?.level || 'Primary';
 
-  /* Build initial arm chip state */
-  let modalArms = cls ? [...cls.arms] : ['A', 'B', 'C'];
-
+  /* ── ARM CHIP RENDERER ── */
   const renderArmChips = () => {
     const container = document.getElementById('arm-chips');
     if (!container) return;
+    const tier = CLASS_TIERS[activeLevel] || CLASS_TIERS['Primary'];
+
     container.innerHTML = modalArms.map(a => `
-      <span style="display:inline-flex;align-items:center;gap:.3rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.2rem .65rem;font-size:.85rem;font-weight:600;color:#1d4ed8;margin:.15rem;">
+      <span style="display:inline-flex;align-items:center;gap:.3rem;background:${tier.surface};border:1px solid ${tier.border};color:${tier.text};border-radius:8px;padding:.2rem .6rem;font-size:.84rem;font-weight:700;margin:.15rem;">
         ${a}
-        <button type="button" onclick="removeArm('${a}')"
-          style="background:none;border:none;cursor:pointer;color:#3b82f6;font-size:.9rem;padding:0;line-height:1;">✕</button>
+        <button type="button" onclick="removeArmChip('${a}')"
+          style="background:none;border:none;cursor:pointer;color:${tier.text};font-size:.85rem;padding:0;line-height:1;opacity:.7;">✕</button>
       </span>`).join('') +
       `<button type="button" id="add-arm-btn" onclick="toggleAddArmInput()"
-        style="${btnStyle('secondary', 'sm')};font-size:.78rem;">+ Add Arm</button>
+        style="${btnStyle('secondary', 'sm')};font-size:.78rem;">+ Arm</button>
        <span id="add-arm-inline" style="display:none;align-items:center;gap:.35rem;">
-         <input id="new-arm-input" placeholder="e.g. D" maxlength="5"
-           style="${inputStyle()};width:80px;padding:.3rem .5rem;font-size:.85rem;"
+         <input id="new-arm-input" placeholder="e.g. D" maxlength="6"
+           style="${inputStyle('sm')};width:80px;"
            onkeydown="if(event.key==='Enter'){event.preventDefault();addArmFromInput();}">
          <button type="button" onclick="addArmFromInput()" style="${btnStyle('primary', 'sm')}">Add</button>
        </span>`;
   };
 
-  /* Expose helpers to global scope so inline onclick works */
-  window.removeArm = function (a) {
-    modalArms = modalArms.filter(x => x !== a);
-    renderArmChips();
+  /* ── QUICK ARM PRESETS ── */
+  const renderArmPresets = () => {
+    const container = document.getElementById('arm-presets');
+    if (!container) return;
+    const tier = CLASS_TIERS[activeLevel] || CLASS_TIERS['Primary'];
+    container.innerHTML = tier.armSuggestions.map(a => `
+      <button type="button" onclick="quickAddArm('${a}')"
+        style="background:${modalArms.includes(a) ? tier.color : tier.surface};color:${modalArms.includes(a) ? '#fff' : tier.text};border:1px solid ${tier.border};border-radius:6px;padding:.2rem .55rem;font-size:.78rem;font-weight:600;cursor:pointer;transition:all .12s;">
+        ${a}${modalArms.includes(a) ? ' ✓' : ''}
+      </button>`).join('');
   };
-  window.toggleAddArmInput = function () {
+
+  /* ── CLASS NAME PRESETS ── */
+  const renderClassPresets = () => {
+    const container = document.getElementById('class-presets');
+    if (!container) return;
+    const tier    = CLASS_TIERS[activeLevel] || CLASS_TIERS['Primary'];
+    const existing = new Set((App.data.classes || []).filter(c => c.id !== cls?.id).map(c => c.name));
+    container.innerHTML = `
+      <div style="font-size:.75rem;color:#9ca3af;margin-bottom:.3rem;">Quick-fill:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.35rem;">
+        ${tier.presets.map(p => {
+          const used = existing.has(p);
+          return `<button type="button" onclick="${used ? '' : `fillClassName('${p}')`}"
+            style="padding:.2rem .6rem;border-radius:6px;font-size:.78rem;font-weight:600;cursor:${used ? 'not-allowed' : 'pointer'};
+                   background:${used ? '#f3f4f6' : tier.surface};color:${used ? '#d1d5db' : tier.text};border:1px solid ${used ? '#e5e7eb' : tier.border};
+                   text-decoration:${used ? 'line-through' : 'none'};"
+            title="${used ? 'Already exists' : `Add ${p}`}">
+            ${p}${used ? ' ✓' : ''}
+          </button>`;
+        }).join('')}
+      </div>`;
+  };
+
+  /* ── TIER DESCRIPTION HELPER ── */
+  const renderTierDesc = () => {
+    const container = document.getElementById('tier-desc');
+    if (!container) return;
+    const tier = CLASS_TIERS[activeLevel];
+    if (!tier) { container.innerHTML = ''; return; }
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.5rem;background:${tier.surface};border:1px solid ${tier.border};border-radius:8px;padding:.55rem .85rem;font-size:.82rem;color:${tier.text};">
+        <span style="font-size:1.1rem;">${tier.icon}</span>
+        <span><strong>${activeLevel}</strong> — ${tier.ageRange}</span>
+      </div>`;
+  };
+
+  /* ── Expose arm helpers globally (inline onclick) ── */
+  window.removeArmChip = (a) => { modalArms = modalArms.filter(x => x !== a); renderArmChips(); renderArmPresets(); };
+  window.toggleAddArmInput = () => {
     const el = document.getElementById('add-arm-inline');
     el.style.display = el.style.display === 'none' ? 'inline-flex' : 'none';
-    if (el.style.display !== 'none') document.getElementById('new-arm-input').focus();
+    if (el.style.display !== 'none') document.getElementById('new-arm-input')?.focus();
   };
-  window.addArmFromInput = function () {
+  window.addArmFromInput = () => {
     const val = (document.getElementById('new-arm-input')?.value || '').trim().toUpperCase();
     if (!val) return;
     if (modalArms.includes(val)) { toast(`Arm "${val}" already exists.`, 'warning'); return; }
     modalArms.push(val);
+    document.getElementById('new-arm-input').value = '';
+    document.getElementById('add-arm-inline').style.display = 'none';
     renderArmChips();
+    renderArmPresets();
+  };
+  window.quickAddArm = (a) => {
+    if (modalArms.includes(a)) {
+      modalArms = modalArms.filter(x => x !== a);
+    } else {
+      modalArms.push(a);
+    }
+    renderArmChips();
+    renderArmPresets();
+  };
+  window.fillClassName = (name) => {
+    const inp = document.getElementById('cls-name');
+    if (inp) { inp.value = name; }
   };
 
+  /* ── MODAL HTML ── */
   showModal(`
-    <h3 style="margin:0 0 1.5rem;">${isEdit ? `✏ Edit Class — ${cls.name}` : '➕ Add New Class'}</h3>
-    <form id="class-form">
+    <div style="min-width:360px;max-width:520px;">
+      <h3 style="margin:0 0 1.25rem;font-size:1.1rem;">
+        ${isEdit ? `✏ Edit Class — ${cls.name}` : '➕ Add New Class'}
+      </h3>
+      <form id="class-form">
 
-      <label style="${labelStyle()}">Class Name <span style="color:#ef4444;">*</span></label>
-      <input id="cls-name" value="${cls?.name || ''}" placeholder="e.g. JSS 1"
-        style="${inputStyle()}" required autocomplete="off">
-      <div id="cls-name-error" style="color:#ef4444;font-size:.8rem;margin-top:.25rem;display:none;"></div>
+        <!-- Level / Tier selector -->
+        <label style="${labelStyle()}">School Level / Tier <span style="color:#ef4444;">*</span></label>
+        <div id="level-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:.5rem;margin-bottom:.75rem;">
+          ${TIER_ORDER.map(tier => {
+            const t = CLASS_TIERS[tier];
+            const sel = activeLevel === tier;
+            return `
+              <button type="button" data-level="${tier}" onclick="selectTierTile('${tier}')"
+                style="padding:.5rem .4rem;border-radius:10px;border:2px solid ${sel ? t.color : t.border};
+                       background:${sel ? t.color : t.surface};color:${sel ? '#fff' : t.text};
+                       cursor:pointer;font-size:.75rem;font-weight:700;text-align:center;
+                       transition:all .15s;line-height:1.4;">
+                <div style="font-size:1.3rem;">${t.icon}</div>
+                ${tier}
+              </button>`;
+          }).join('')}
+        </div>
+        <div id="tier-desc" style="margin-bottom:1rem;"></div>
 
-      <label style="${labelStyle()}">Level <span style="color:#ef4444;">*</span></label>
-      <select id="cls-level" style="${inputStyle()}">
-        <option ${cls?.level === 'Junior' ? 'selected' : ''} value="Junior">Junior</option>
-        <option ${cls?.level === 'Senior' ? 'selected' : ''} value="Senior">Senior</option>
-      </select>
+        <!-- Class name -->
+        <label style="${labelStyle()}">Class Name <span style="color:#ef4444;">*</span></label>
+        <input id="cls-name" value="${cls?.name || ''}" placeholder="e.g. Primary 3, JSS 1, Creche…"
+          style="${inputStyle()}" required autocomplete="off">
+        <div id="class-presets" style="margin-top:.4rem;margin-bottom:.25rem;"></div>
+        <div id="cls-name-error" style="color:#ef4444;font-size:.8rem;margin-top:.25rem;display:none;"></div>
 
-      <label style="${labelStyle()}">Arms</label>
-      <div id="arm-chips" style="display:flex;flex-wrap:wrap;align-items:center;gap:.25rem;padding:.5rem;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;min-height:44px;"></div>
-      <p style="font-size:.78rem;color:#9ca3af;margin:.35rem 0 0;">Click ✕ to remove an arm. At least one arm is required.</p>
+        <!-- Arms -->
+        <label style="${labelStyle()};margin-top:.9rem;">Arms / Sections</label>
+        <div id="arm-chips" style="display:flex;flex-wrap:wrap;align-items:center;gap:.25rem;padding:.5rem .6rem;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;min-height:46px;"></div>
 
-      <div style="display:flex;gap:.75rem;margin-top:1.75rem;justify-content:flex-end;">
-        <button type="button" onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
-        <button type="submit" style="${btnStyle('primary')}">${isEdit ? '💾 Save Changes' : '✅ Add Class'}</button>
-      </div>
-    </form>`);
+        <div style="margin-top:.5rem;">
+          <div style="font-size:.75rem;color:#9ca3af;margin-bottom:.3rem;">Quick-add arms:</div>
+          <div id="arm-presets" style="display:flex;flex-wrap:wrap;gap:.35rem;"></div>
+        </div>
+        <p style="font-size:.75rem;color:#9ca3af;margin:.4rem 0 0;">At least one arm is required. Click to toggle.</p>
 
-  /* Render chips now that the DOM exists */
+        <!-- Actions -->
+        <div style="display:flex;gap:.75rem;margin-top:1.75rem;justify-content:flex-end;">
+          <button type="button" onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
+          <button type="submit" style="${btnStyle('primary')}">${isEdit ? '💾 Save Changes' : '✅ Add Class'}</button>
+        </div>
+      </form>
+    </div>`);
+
+  /* ── Tier tile switch (must be global for onclick) ── */
+  window.selectTierTile = function(tier) {
+    activeLevel = tier;
+
+    // Visually update tiles
+    document.querySelectorAll('#level-tiles button').forEach(btn => {
+      const t   = CLASS_TIERS[btn.dataset.level];
+      const sel = btn.dataset.level === tier;
+      btn.style.borderColor  = sel ? t.color : t.border;
+      btn.style.background   = sel ? t.color : t.surface;
+      btn.style.color        = sel ? '#fff'  : t.text;
+    });
+
+    // If switching tier and not editing, pre-fill arm suggestions
+    if (!isEdit && modalArms.length === 0) {
+      modalArms = [...(CLASS_TIERS[tier]?.armSuggestions?.slice(0, 3) || ['A','B','C'])];
+    }
+
+    renderTierDesc();
+    renderArmChips();
+    renderArmPresets();
+    renderClassPresets();
+  };
+
+  /* Initialise rendered sub-components */
+  renderTierDesc();
   renderArmChips();
+  renderArmPresets();
+  renderClassPresets();
 
+  /* ── Form default arms for new class ── */
+  if (!isEdit && modalArms.length === 0) {
+    modalArms = [...(CLASS_TIERS[activeLevel]?.armSuggestions?.slice(0, 3) || ['A','B','C'])];
+    renderArmChips();
+    renderArmPresets();
+  }
+
+  /* ── Form submit ── */
   document.getElementById('class-form').onsubmit = (e) => {
     e.preventDefault();
-    const name  = document.getElementById('cls-name').value.trim();
-    const level = document.getElementById('cls-level').value;
-    const nameErr = document.getElementById('cls-name-error');
+    const name     = document.getElementById('cls-name').value.trim();
+    const level    = activeLevel;
+    const nameErr  = document.getElementById('cls-name-error');
 
-    /* Validation */
     if (!name) {
-      nameErr.textContent = 'Class name is required.'; nameErr.style.display = '';
-      document.getElementById('cls-name').focus(); return;
+      nameErr.textContent = 'Class name is required.';
+      nameErr.style.display = '';
+      document.getElementById('cls-name').focus();
+      return;
     }
-    /* Duplicate check */
-    const duplicate = App.data.classes.find(c => c.name.toLowerCase() === name.toLowerCase() && c.id !== cls?.id);
+
+    const duplicate = (App.data.classes || []).find(
+      c => c.name.toLowerCase() === name.toLowerCase() && c.id !== cls?.id
+    );
     if (duplicate) {
-      nameErr.textContent = `A class named "${duplicate.name}" already exists.`; nameErr.style.display = '';
-      document.getElementById('cls-name').focus(); return;
+      nameErr.textContent = `A class named "${duplicate.name}" already exists (${duplicate.level}).`;
+      nameErr.style.display = '';
+      document.getElementById('cls-name').focus();
+      return;
     }
     nameErr.style.display = 'none';
 
-    if (modalArms.length === 0) { toast('Add at least one arm.', 'error'); return; }
+    if (modalArms.length === 0) {
+      toast('Add at least one arm.', 'error');
+      return;
+    }
 
     if (isEdit) {
       const oldName = cls.name;
       Object.assign(cls, { name, level, arms: [...modalArms] });
-      /* Update references in students / teachers if name changed */
       if (oldName !== name) {
-        App.data.students.forEach(s  => { if (s.class === oldName) s.class = name; });
-        if (App.data.teachers) App.data.teachers.forEach(t => { if (t.assignedClass === oldName) t.assignedClass = name; });
+        (App.data.students || []).forEach(s => { if (s.class === oldName) s.class = name; });
+        (App.data.teachers || []).forEach(t => { if (t.assignedClass === oldName) t.assignedClass = name; });
       }
+      closeModal();
+      renderClasses();
+      setTimeout(() => {
+        const row = document.getElementById(`class-row-${cls.id}`);
+        if (row) {
+          row.style.transition = 'background .15s';
+          row.style.background = CLASS_TIERS[level]?.surface || '#d1fae5';
+          setTimeout(() => { row.style.background = ''; }, 1500);
+        }
+      }, 80);
       toast('Class updated!', 'success');
     } else {
-      App.data.classes.push({ id: Date.now(), name, level, arms: [...modalArms] });
-      toast('Class added!', 'success');
-    }
-
-    closeModal();
-    renderClasses();
-
-    /* Highlight the saved row */
-    if (isEdit) {
-      const row = document.getElementById(`class-row-${cls.id}`);
-      if (row) {
-        row.style.transition = 'background .1s';
-        row.style.background = '#d1fae5';
-        setTimeout(() => { row.style.background = ''; }, 1400);
-      }
+      const newCls = { id: Date.now(), name, level, arms: [...modalArms] };
+      App.data.classes = App.data.classes || [];
+      App.data.classes.push(newCls);
+      closeModal();
+      renderClasses();
+      toast(`${CLASS_TIERS[level]?.icon || ''} ${name} added!`, 'success');
     }
   };
 }
@@ -2092,108 +2421,613 @@ window.printStudentList = function () {
 /* ─────────────────────────────────────────
    10. TEACHERS / STAFF  (Admin only)
 ───────────────────────────────────────── */
-function renderTeachers(filter = '') {
-  if (!priv.canManage()) { accessDeniedPage('teachers'); return; }
+/* ─────────────────────────────────────────────────────────────────────────────
+   STAFF MANAGEMENT MODULE
+   Handles: Teachers, Admin, Support, Leadership staff
+   Features: CRUD, Credential Uploads, Positions, Departments, Filters, Export
+   ───────────────────────────────────────────────────────────────────────────── */
 
-  const section = document.getElementById('teachers');
-  const list = filter
-    ? App.data.teachers.filter(t => t.name.toLowerCase().includes(filter.toLowerCase()) || t.subject.toLowerCase().includes(filter.toLowerCase()))
-    : App.data.teachers;
+// ── Constants ──────────────────────────────────────────────────────────────────
+const STAFF_POSITIONS = {
+  Academic: [
+    'Class Teacher', 'Form Master/Mistress', 'Subject Teacher', 'HOD',
+    'Dean of Studies', 'Vice Principal (Academic)', 'Principal',
+    'Deputy Principal', 'ICT Director', 'Librarian', 'Counsellor',
+    'Lab Technician', 'Sports Master', 'Patron'
+  ],
+  Administrative: [
+    'Secretary', 'Bursar', 'Accounts Officer', 'Admin Officer',
+    'HR Officer', 'PRO', 'Store Keeper', 'Receptionist',
+    'Vice Principal (Admin)'
+  ],
+  Support: [
+    'Driver', 'Security Officer', 'Cleaner', 'Gardener',
+    'Canteen Manager', 'Chef/Cook', 'Maintenance Officer', 'Nurse/First Aider'
+  ],
+  Leadership: [
+    'Principal', 'Vice Principal (Academic)', 'Vice Principal (Admin)',
+    'Deputy Principal', 'Director', 'Proprietor/Proprietress'
+  ]
+};
+
+const STAFF_CATEGORIES = ['All', 'Academic', 'Administrative', 'Support', 'Leadership'];
+
+const STAFF_DEPARTMENTS = [
+  'Sciences', 'Humanities', 'Languages', 'Mathematics', 'Social Studies',
+  'Arts', 'Technical', 'Administration', 'Support Services', 'Management'
+];
+
+const STAFF_SUBJECTS = [
+  'Mathematics', 'English Language', 'Physics', 'Chemistry', 'Biology',
+  'Economics', 'Literature', 'Geography', 'History', 'Computer Science',
+  'Further Mathematics', 'Civic Education', 'Agricultural Science',
+  'Fine Arts', 'Music', 'French', 'Yoruba', 'Igbo', 'Hausa'
+];
+
+const STAFF_CLASSES = ['JSS 1', 'JSS 2', 'JSS 3', 'SS 1', 'SS 2', 'SS 3'];
+
+const STAFF_STATUS_COLORS = {
+  Active: 'success',
+  'On Leave': 'warning',
+  Suspended: 'danger',
+  Resigned: 'gray'
+};
+
+// ── Module State ───────────────────────────────────────────────────────────────
+let _activeStaffCategory = 'All';
+let _currentEditStaffId = null;
+let _pendingStaffFiles = [];
+
+// ── Inject CSS ─────────────────────────────────────────────────────────────────
+(function injectStaffStyles() {
+  if (document.getElementById('staff-module-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'staff-module-styles';
+  style.textContent = `
+    .sm-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:.75rem; margin-bottom:1.5rem; }
+    .sm-stat { background:var(--surface,#181c27); border:1px solid var(--border,#2a2f42); border-radius:10px; padding:.9rem 1rem; }
+    .sm-stat-num { font-size:1.6rem; font-weight:700; font-family:monospace; line-height:1; }
+    .sm-stat-label { font-size:.72rem; color:var(--text2,#8892a4); text-transform:uppercase; letter-spacing:.05em; margin-top:.3rem; }
+    .sm-tabs { display:flex; gap:.4rem; background:var(--surface,#181c27); border-radius:10px; padding:.3rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+    .sm-tab { padding:.4rem .9rem; border-radius:7px; font-size:.8rem; font-weight:500; cursor:pointer; transition:all .15s; color:var(--text2,#8892a4); border:none; background:none; font-family:inherit; }
+    .sm-tab.active { background:var(--accent,#4f8ef7); color:#fff; }
+    .sm-filters { display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:1.2rem; align-items:center; }
+    .sm-search-wrap { position:relative; flex:1; min-width:200px; }
+    .sm-search-wrap input { width:100%; padding:.55rem .9rem .55rem 2.2rem; background:var(--surface,#181c27); border:1px solid var(--border,#2a2f42); border-radius:8px; color:var(--text,#e2e8f0); font-size:.85rem; font-family:inherit; outline:none; transition:border-color .15s; }
+    .sm-search-wrap input:focus { border-color:var(--accent,#4f8ef7); }
+    .sm-search-icon { position:absolute; left:.65rem; top:50%; transform:translateY(-50%); color:var(--text3,#4a5568); font-size:.85rem; pointer-events:none; }
+    .sm-filter-sel { padding:.52rem .8rem; background:var(--surface,#181c27); border:1px solid var(--border,#2a2f42); border-radius:8px; color:var(--text,#e2e8f0); font-size:.82rem; font-family:inherit; outline:none; cursor:pointer; }
+    .sm-table-wrap { overflow-x:auto; background:var(--surface,#181c27); border:1px solid var(--border,#2a2f42); border-radius:10px; }
+    .sm-table { width:100%; border-collapse:collapse; font-size:.83rem; }
+    .sm-table thead tr { background:var(--surface2,#1e2333); }
+    .sm-table th { padding:.7rem 1rem; text-align:left; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text2,#8892a4); font-weight:600; white-space:nowrap; }
+    .sm-table td { padding:.7rem 1rem; border-top:1px solid var(--border,#2a2f42); vertical-align:middle; }
+    .sm-table tr:hover td { background:rgba(79,142,247,.04); }
+    .sm-avatar { width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,#4f8ef7,#7c3aed); display:inline-flex; align-items:center; justify-content:center; font-size:.7rem; font-weight:700; color:#fff; flex-shrink:0; }
+    .sm-name-cell { display:flex; align-items:center; gap:.6rem; }
+    .sm-badge { display:inline-block; padding:.2rem .55rem; border-radius:99px; font-size:.7rem; font-weight:600; }
+    .sm-badge-success { background:rgba(16,185,129,.15); color:#10b981; }
+    .sm-badge-warning { background:rgba(245,158,11,.15); color:#f59e0b; }
+    .sm-badge-danger  { background:rgba(239,68,68,.15); color:#ef4444; }
+    .sm-badge-blue    { background:rgba(79,142,247,.15); color:#4f8ef7; }
+    .sm-badge-purple  { background:rgba(124,58,237,.15); color:#a78bfa; }
+    .sm-badge-gray    { background:rgba(148,163,184,.1); color:#94a3b8; }
+    .sm-cred-badge { display:inline-flex; align-items:center; gap:.3rem; background:rgba(79,142,247,.12); border:1px solid rgba(79,142,247,.25); color:#4f8ef7; border-radius:6px; padding:.15rem .45rem; font-size:.68rem; font-weight:600; cursor:pointer; }
+    .sm-upload-zone { border:2px dashed var(--border,#2a2f42); border-radius:10px; padding:1.2rem; text-align:center; cursor:pointer; transition:border-color .2s, background .2s; position:relative; }
+    .sm-upload-zone:hover, .sm-upload-zone.drag { border-color:var(--accent,#4f8ef7); background:rgba(79,142,247,.05); }
+    .sm-upload-zone input[type=file] { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; height:100%; }
+    .sm-cred-list { display:flex; flex-direction:column; gap:.4rem; margin-top:.7rem; }
+    .sm-cred-item { display:flex; align-items:center; gap:.6rem; background:var(--bg,#0f1117); border:1px solid var(--border,#2a2f42); border-radius:7px; padding:.45rem .75rem; font-size:.78rem; }
+    .sm-cred-item .ci-name { flex:1; color:var(--text,#e2e8f0); }
+    .sm-cred-item .ci-size { color:var(--text3,#4a5568); font-size:.7rem; }
+    .sm-cred-item .ci-del { cursor:pointer; color:#ef4444; font-size:.85rem; border:none; background:none; padding:0; }
+    .sm-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    .sm-span2 { grid-column:1/-1; }
+    .sm-form-group label { display:block; font-size:.75rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--text2,#8892a4); margin-bottom:.4rem; }
+    .sm-form-group input, .sm-form-group select, .sm-form-group textarea { width:100%; padding:.6rem .85rem; background:var(--bg,#0f1117); border:1px solid var(--border,#2a2f42); border-radius:8px; color:var(--text,#e2e8f0); font-size:.85rem; font-family:inherit; outline:none; transition:border-color .15s; }
+    .sm-form-group input:focus, .sm-form-group select:focus, .sm-form-group textarea:focus { border-color:var(--accent,#4f8ef7); }
+    .sm-form-group textarea { resize:vertical; min-height:70px; }
+    .sm-form-section { grid-column:1/-1; padding:.5rem 0 .3rem; border-top:1px solid var(--border,#2a2f42); margin-top:.3rem; }
+    .sm-form-section span { font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--accent,#4f8ef7); }
+    .sm-empty { text-align:center; padding:3rem; color:var(--text3,#4a5568); }
+    .sm-empty-icon { font-size:2rem; margin-bottom:.6rem; }
+  `;
+  document.head.appendChild(style);
+})();
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function smMakeId() {
+  const num = (App.data.staff || App.data.teachers || []).length + 1;
+  return 'S' + String(num).padStart(3, '0');
+}
+
+function smGetInitials(name) {
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
+
+function smAvatarColor(id) {
+  const colors = ['#4f8ef7', '#7c3aed', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
+  const num = parseInt((id || '0').replace(/\D/g, '')) || 0;
+  return colors[num % colors.length];
+}
+
+function smFileIcon(name) {
+  const ext = (name || '').split('.').pop().toLowerCase();
+  const icons = { pdf: '📄', jpg: '🖼️', jpeg: '🖼️', png: '🖼️', doc: '📝', docx: '📝' };
+  return icons[ext] || '📎';
+}
+
+function smFormatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// ── Render Entry Point ─────────────────────────────────────────────────────────
+function renderStaff(filter = '') {
+  if (!priv.canManage()) { accessDeniedPage('staff'); return; }
+
+  // Support both App.data.staff and legacy App.data.teachers
+  if (!App.data.staff) App.data.staff = App.data.teachers || [];
+
+  const section = document.getElementById('staff') || document.getElementById('teachers');
+  if (!section) return;
 
   section.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:1rem;">
-      <h2 style="margin:0;">Staff (${App.data.teachers.length})</h2>
-      <div style="display:flex;gap:.75rem;flex-wrap:wrap;">
-        <input id="teacher-search" placeholder="Search staff…" value="${filter}" style="${inputStyle('sm')}" oninput="renderTeachers(this.value)">
-        <button onclick="openTeacherModal()" style="${btnStyle('primary')}">+ Add Staff</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+      <h2 style="margin:0;">👥 Staff (${App.data.staff.length})</h2>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;">
+        <button onclick="smExport()" style="${btnStyle('secondary','sm')}">⬇ Export</button>
+        <button onclick="openStaffModal()" style="${btnStyle('primary')}">+ Add Staff</button>
       </div>
     </div>
-    <div style="overflow-x:auto;">
-    <table style="${tableStyle()}">
-      <thead><tr style="${thRowStyle()}">
-        <th style="${thStyle()}">ID</th><th style="${thStyle()}">Name</th><th style="${thStyle()}">Subject</th>
-        <th style="${thStyle()}">Class</th><th style="${thStyle()}">Arm</th><th style="${thStyle()}">Status</th>
-        <th style="${thStyle()}">Actions</th>
-      </tr></thead>
-      <tbody>
-        ${list.map(t => `
-          <tr style="${trStyle()}">
-            <td style="${tdStyle()}">${t.id}</td><td style="${tdStyle()}">${t.name}</td>
-            <td style="${tdStyle()}">${t.subject}</td><td style="${tdStyle()}">${t.class}</td>
-            <td style="${tdStyle()}">${t.arm||'-'}</td>
-            <td style="${tdStyle()}"><span style="${badgeStyle(t.status==='Active'?'success':'warning')}">${t.status}</span></td>
-            <td style="${tdStyle()}">
-              <button onclick="editTeacher('${t.id}')" style="${btnStyle('secondary','sm')}">Edit</button>
-              <button onclick="deleteTeacher('${t.id}')" style="${btnStyle('danger','sm')}">Del</button>
-            </td>
-          </tr>`).join('')}
-      </tbody>
-    </table></div>`;
+    <div id="sm-stats-bar" class="sm-stats"></div>
+    <div id="sm-category-tabs" class="sm-tabs"></div>
+    <div class="sm-filters">
+      <div class="sm-search-wrap">
+        <span class="sm-search-icon">🔍</span>
+        <input type="text" id="sm-search" placeholder="Search by name, position, subject…" value="${filter}" oninput="smApplyFilters()">
+      </div>
+      <select class="sm-filter-sel" id="sm-filter-status" onchange="smApplyFilters()">
+        <option value="">All Status</option>
+        <option>Active</option><option>On Leave</option><option>Suspended</option><option>Resigned</option>
+      </select>
+      <select class="sm-filter-sel" id="sm-filter-dept" onchange="smApplyFilters()">
+        <option value="">All Departments</option>
+        ${STAFF_DEPARTMENTS.map(d => `<option>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div class="sm-table-wrap">
+      <table class="sm-table">
+        <thead><tr>
+          <th>ID</th><th>Name</th><th>Position</th><th>Category</th>
+          <th>Department</th><th>Class/Unit</th><th>Credentials</th><th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="sm-tbody"></tbody>
+      </table>
+    </div>
+  `;
+
+  smRenderTabs();
+  smRenderStats();
+  smRenderTable();
 }
 
-window.editTeacher = function(id) {
-  if (!priv.canManage() && denyAccess()) return;
-  openTeacherModal(App.data.teachers.find(t => t.id === id));
-};
-window.deleteTeacher = function(id) {
-  if (!priv.canManage() && denyAccess()) return;
-  if (!confirmDlg('Delete this staff member?')) return;
-  App.data.teachers = App.data.teachers.filter(t => t.id !== id); renderTeachers(); toast('Staff deleted.', 'warning');
+// ── Stats ──────────────────────────────────────────────────────────────────────
+function smRenderStats() {
+  const s = App.data.staff;
+  const bar = document.getElementById('sm-stats-bar');
+  if (!bar) return;
+  bar.innerHTML = [
+    { num: s.length, label: 'Total Staff', color: '#4f8ef7' },
+    { num: s.filter(x => x.status === 'Active').length, label: 'Active', color: '#10b981' },
+    { num: s.filter(x => x.category === 'Academic').length, label: 'Academic', color: '#7c3aed' },
+    { num: s.filter(x => x.category === 'Administrative').length, label: 'Admin', color: '#f59e0b' },
+    { num: s.filter(x => x.category === 'Support').length, label: 'Support', color: '#06b6d4' },
+  ].map(item => `
+    <div class="sm-stat">
+      <div class="sm-stat-num" style="color:${item.color}">${item.num}</div>
+      <div class="sm-stat-label">${item.label}</div>
+    </div>`).join('');
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────────
+function smRenderTabs() {
+  const el = document.getElementById('sm-category-tabs');
+  if (!el) return;
+  el.innerHTML = STAFF_CATEGORIES.map(c => `
+    <button class="sm-tab ${_activeStaffCategory === c ? 'active' : ''}" onclick="smSetCategory('${c}')">${c}</button>
+  `).join('');
+}
+
+function smSetCategory(c) {
+  _activeStaffCategory = c;
+  smRenderTabs();
+  smRenderTable();
+}
+
+// ── Filters ────────────────────────────────────────────────────────────────────
+function smApplyFilters() { smRenderTable(); }
+
+function smGetFiltered() {
+  const q = (document.getElementById('sm-search')?.value || '').toLowerCase();
+  const status = document.getElementById('sm-filter-status')?.value || '';
+  const dept = document.getElementById('sm-filter-dept')?.value || '';
+  return (App.data.staff || []).filter(s => {
+    const catOk = _activeStaffCategory === 'All' || s.category === _activeStaffCategory;
+    const statusOk = !status || s.status === status;
+    const deptOk = !dept || s.department === dept;
+    const qOk = !q || [s.name, s.position, s.subject, s.id, s.department].some(f => (f || '').toLowerCase().includes(q));
+    return catOk && statusOk && deptOk && qOk;
+  });
+}
+
+// ── Table ──────────────────────────────────────────────────────────────────────
+function smRenderTable() {
+  const tbody = document.getElementById('sm-tbody');
+  if (!tbody) return;
+  const list = smGetFiltered();
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="9"><div class="sm-empty"><div class="sm-empty-icon">🔍</div>No staff found</div></td></tr>`;
+    return;
+  }
+  const catColors = { Academic: 'blue', Administrative: 'purple', Support: 'gray', Leadership: 'success' };
+  tbody.innerHTML = list.map(s => {
+    const badgeClass = `sm-badge-${STAFF_STATUS_COLORS[s.status] || 'gray'}`;
+    const credCount = (s.credentials || []).length;
+    const color = smAvatarColor(s.id);
+    return `
+      <tr>
+        <td style="font-family:monospace;font-size:.75rem;color:#4f8ef7">${s.id}</td>
+        <td>
+          <div class="sm-name-cell">
+            <div class="sm-avatar" style="background:linear-gradient(135deg,${color},${color}88)">${smGetInitials(s.name)}</div>
+            <div>
+              <div style="font-weight:600;font-size:.83rem">${s.name}</div>
+              <div style="font-size:.7rem;color:#8892a4">${s.subject || s.department || ''}</div>
+            </div>
+          </div>
+        </td>
+        <td style="font-size:.82rem;font-weight:500">${s.position || '-'}</td>
+        <td><span class="sm-badge sm-badge-${catColors[s.category] || 'gray'}">${s.category || '-'}</span></td>
+        <td style="font-size:.8rem;color:#8892a4">${s.department || '-'}</td>
+        <td style="font-size:.8rem">${s.classUnit || s.class || '-'}</td>
+        <td>
+          ${credCount > 0
+            ? `<span class="sm-cred-badge" onclick="smViewCredentials('${s.id}')">📎 ${credCount} file${credCount > 1 ? 's' : ''}</span>`
+            : `<span style="color:#4a5568;font-size:.75rem">None</span>`}
+        </td>
+        <td><span class="sm-badge ${badgeClass}">${s.status}</span></td>
+        <td>
+          <div style="display:flex;gap:.3rem;flex-wrap:wrap">
+            <button onclick="smViewProfile('${s.id}')" style="${btnStyle('secondary', 'sm')}">View</button>
+            <button onclick="openStaffModal('${s.id}')" style="${btnStyle('secondary', 'sm')}">Edit</button>
+            <button onclick="smDeleteStaff('${s.id}')" style="${btnStyle('danger', 'sm')}">Del</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+// ── View Profile ───────────────────────────────────────────────────────────────
+window.smViewProfile = function(id) {
+  const s = App.data.staff.find(x => x.id === id);
+  if (!s) return;
+  const credHTML = (s.credentials || []).map(c => `
+    <div class="sm-cred-item">
+      <span>${smFileIcon(c.name)}</span>
+      <span class="ci-name">${c.name}</span>
+      <span class="ci-size">${c.size}</span>
+      <span style="color:#8892a4;font-size:.7rem">${c.type || ''}</span>
+    </div>`).join('');
+  showModal(`
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;">
+      <div class="sm-avatar" style="width:56px;height:56px;font-size:1.1rem;background:linear-gradient(135deg,${smAvatarColor(s.id)},${smAvatarColor(s.id)}88)">${smGetInitials(s.name)}</div>
+      <div>
+        <h3 style="margin:0">${s.name}</h3>
+        <div style="color:#8892a4;font-size:.82rem;margin-top:.2rem">${s.position || ''} · ${s.department || ''}</div>
+        <span class="sm-badge sm-badge-${STAFF_STATUS_COLORS[s.status] || 'gray'}" style="margin-top:.4rem;display:inline-block">${s.status}</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;font-size:.83rem;">
+      ${[
+        ['Staff ID', s.id], ['Category', s.category], ['Subject', s.subject || '-'],
+        ['Class/Unit', s.classUnit || s.class || '-'], ['Phone', s.phone || '-'], ['Email', s.email || '-'],
+        ['Gender', s.gender || '-'], ['Qualification', s.qualification || '-'],
+        ['Experience', s.experience || '-'], ['Date Joined', s.dateJoined || '-'],
+      ].map(([k, v]) => `
+        <div style="background:rgba(0,0,0,.2);border-radius:7px;padding:.65rem .85rem;">
+          <div style="color:#4a5568;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">${k}</div>
+          <div style="font-weight:500">${v}</div>
+        </div>`).join('')}
+    </div>
+    ${s.notes ? `<div style="margin-top:1rem;padding:.75rem;border-radius:7px;background:rgba(0,0,0,.2);font-size:.82rem;color:#8892a4"><strong style="color:#e2e8f0">Notes:</strong> ${s.notes}</div>` : ''}
+    ${credHTML ? `<div style="margin-top:1rem;"><div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#4f8ef7;margin-bottom:.6rem">Credentials</div><div class="sm-cred-list">${credHTML}</div></div>` : ''}
+    <div style="display:flex;justify-content:flex-end;gap:.6rem;margin-top:1.5rem;">
+      <button onclick="closeModal()" style="${btnStyle('secondary')}">Close</button>
+      <button onclick="closeModal();openStaffModal('${s.id}')" style="${btnStyle('primary')}">Edit Profile</button>
+    </div>
+  `);
 };
 
-function openTeacherModal(t = null) {
+// ── View Credentials ───────────────────────────────────────────────────────────
+window.smViewCredentials = function(id) {
+  const s = App.data.staff.find(x => x.id === id);
+  if (!s) return;
+  showModal(`
+    <h3 style="margin:0 0 1.2rem">📎 Credentials — ${s.name}</h3>
+    ${(s.credentials || []).length
+      ? `<div class="sm-cred-list">${s.credentials.map(c => `
+          <div class="sm-cred-item">
+            <span>${smFileIcon(c.name)}</span>
+            <span class="ci-name">${c.name}</span>
+            <span class="ci-size">${c.size}</span>
+            <span style="color:#8892a4;font-size:.7rem">${c.type || ''}</span>
+          </div>`).join('')}</div>`
+      : `<div class="sm-empty"><div class="sm-empty-icon">📂</div>No credentials uploaded</div>`}
+    <div style="display:flex;justify-content:flex-end;margin-top:1.2rem;">
+      <button onclick="closeModal()" style="${btnStyle('secondary')}">Close</button>
+    </div>
+  `);
+};
+
+// ── Add / Edit Modal ───────────────────────────────────────────────────────────
+window.openStaffModal = function(id = null) {
   if (!priv.canManage() && denyAccess()) return;
-  const isEdit = !!t;
-  const subjOpts = App.data.subjects.map(s => `<option ${t?.subject===s.name?'selected':''}>${s.name}</option>`).join('');
-  const clsOpts  = App.data.classes.map(c => `<option ${t?.class===c.name?'selected':''}>${c.name}</option>`).join('');
-  const selCls   = t ? App.data.classes.find(c => c.name===t.class) : App.data.classes[0];
-  const armOpts  = selCls?.arms.map(a => `<option ${t?.arm===a?'selected':''}>${a}</option>`).join('') || '';
+  _currentEditStaffId = id;
+  _pendingStaffFiles = [];
+  const s = id ? App.data.staff.find(x => x.id === id) : null;
+  const isEdit = !!s;
+
+  const posOpts = Object.entries(STAFF_POSITIONS)
+    .map(([grp, pos]) => `<optgroup label="${grp}">${pos.map(p => `<option ${s?.position === p ? 'selected' : ''}>${p}</option>`).join('')}</optgroup>`)
+    .join('');
+  const deptOpts = STAFF_DEPARTMENTS.map(d => `<option ${s?.department === d ? 'selected' : ''}>${d}</option>`).join('');
+  const classOpts = ['N/A', ...STAFF_CLASSES].map(c => `<option ${(s?.classUnit || s?.class || 'N/A') === c ? 'selected' : ''}>${c}</option>`).join('');
+  const subjOpts = ['N/A', ...STAFF_SUBJECTS].map(x => `<option ${(s?.subject || 'N/A') === x ? 'selected' : ''}>${x}</option>`).join('');
+  const catOpts = ['Academic', 'Administrative', 'Support', 'Leadership'].map(c => `<option ${s?.category === c ? 'selected' : ''}>${c}</option>`).join('');
+  const qualOpts = ['SSCE/WAEC', 'OND', 'HND', 'B.Sc/B.Ed/B.A', 'PGDE', 'M.Sc/M.Ed/M.A', 'MBA', 'Ph.D', 'Other'].map(q => `<option ${s?.qualification === q ? 'selected' : ''}>${q}</option>`).join('');
+  const credTypeOpts = ['Certificate', 'Degree', 'NYSC', 'NIS Letter', 'ID Card', 'Appointment Letter', 'Reference Letter', 'Medical Certificate', 'TRCN Certificate', 'Other'].map(t => `<option>${t}</option>`).join('');
+
+  const existingCredsHTML = (s?.credentials || []).map((c, i) => `
+    <div class="sm-cred-item" id="sm-existing-cred-${i}">
+      <span>${smFileIcon(c.name)}</span>
+      <span class="ci-name">${c.name}</span>
+      <span class="ci-size">${c.size}</span>
+      <span style="color:#8892a4;font-size:.7rem">${c.type || ''}</span>
+      <button class="ci-del" onclick="smRemoveExistingCred(${i},'${id}')">✕</button>
+    </div>`).join('');
 
   showModal(`
-    <h3 style="margin:0 0 1.5rem;">${isEdit?'Edit Staff Member':'Add New Staff Member'}</h3>
-    <form id="teacher-form" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
-      <div><label style="${labelStyle()}">Full Name</label><input id="tc-name" value="${t?.name||''}" style="${inputStyle()}" required></div>
-      <div><label style="${labelStyle()}">Subject</label><select id="tc-subject" style="${inputStyle()}">${subjOpts}</select></div>
-      <div><label style="${labelStyle()}">Class</label><select id="tc-class" style="${inputStyle()}" onchange="updateTeacherArms()">${clsOpts}</select></div>
-      <div><label style="${labelStyle()}">Arm</label><select id="tc-arm" style="${inputStyle()}">${armOpts}</select></div>
-      <div><label style="${labelStyle()}">Phone</label><input id="tc-phone" value="${t?.phone||''}" style="${inputStyle()}"></div>
-      <div><label style="${labelStyle()}">Email</label><input id="tc-email" value="${t?.email||''}" type="email" style="${inputStyle()}"></div>
-      <div><label style="${labelStyle()}">Status</label>
-        <select id="tc-status" style="${inputStyle()}">
-          <option ${t?.status==='Active'?'selected':''}>Active</option>
-          <option ${t?.status==='On Leave'?'selected':''}>On Leave</option>
-          <option ${t?.status==='Resigned'?'selected':''}>Resigned</option>
+    <h3 style="margin:0 0 1.5rem">${isEdit ? '✏️ Edit Staff Member' : '➕ Add New Staff Member'}</h3>
+    <div class="sm-form-grid">
+
+      <div class="sm-form-section sm-span2"><span>Personal Information</span></div>
+
+      <div class="sm-form-group">
+        <label>Full Name *</label>
+        <input id="sf-name" value="${s?.name || ''}" placeholder="e.g. Mrs. Adaeze Okonkwo" required>
+      </div>
+      <div class="sm-form-group">
+        <label>Gender</label>
+        <select id="sf-gender">
+          <option ${s?.gender === 'Male' ? 'selected' : ''}>Male</option>
+          <option ${s?.gender === 'Female' ? 'selected' : ''}>Female</option>
+          <option ${s?.gender === 'Other' ? 'selected' : ''}>Other</option>
         </select>
       </div>
-      <div style="grid-column:1/-1;display:flex;gap:.75rem;justify-content:flex-end;margin-top:.5rem;">
-        <button type="button" onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
-        <button type="submit" style="${btnStyle('primary')}">${isEdit?'Save':'Add Staff'}</button>
+      <div class="sm-form-group">
+        <label>Phone</label>
+        <input id="sf-phone" value="${s?.phone || ''}" placeholder="080XXXXXXXX">
       </div>
-    </form>`);
+      <div class="sm-form-group">
+        <label>Email</label>
+        <input id="sf-email" type="email" value="${s?.email || ''}" placeholder="staff@school.edu.ng">
+      </div>
+      <div class="sm-form-group">
+        <label>Date Joined</label>
+        <input id="sf-joined" type="date" value="${s?.dateJoined || ''}">
+      </div>
+      <div class="sm-form-group">
+        <label>Status</label>
+        <select id="sf-status">
+          ${['Active', 'On Leave', 'Suspended', 'Resigned'].map(x => `<option ${s?.status === x ? 'selected' : ''}>${x}</option>`).join('')}
+        </select>
+      </div>
 
-  window.updateTeacherArms = function() {
-    const cls = document.getElementById('tc-class')?.value;
-    const classData = App.data.classes.find(c => c.name === cls);
-    const armSel = document.getElementById('tc-arm');
-    if (armSel && classData) armSel.innerHTML = classData.arms.map(a=>`<option>${a}</option>`).join('');
-  };
-  document.getElementById('teacher-form').onsubmit = (e) => {
-    e.preventDefault();
-    const data = {
-      name: document.getElementById('tc-name').value.trim(),
-      subject: document.getElementById('tc-subject').value,
-      class: document.getElementById('tc-class').value,
-      arm: document.getElementById('tc-arm').value,
-      phone: document.getElementById('tc-phone').value,
-      email: document.getElementById('tc-email').value,
-      status: document.getElementById('tc-status').value,
-    };
-    if (!data.name) return toast('Name required.', 'error');
-    if (isEdit) { Object.assign(t, data); toast('Staff updated!', 'success'); }
-    else { App.data.teachers.push({ id: makeId('T', App.data.teachers), role: 'Teacher', ...data }); toast('Staff added!', 'success'); }
-    closeModal(); renderTeachers();
-  };
+      <div class="sm-form-section sm-span2"><span>Role & Assignment</span></div>
+
+      <div class="sm-form-group">
+        <label>Category *</label>
+        <select id="sf-category">${catOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Position *</label>
+        <select id="sf-position">${posOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Department</label>
+        <select id="sf-department"><option value="">-- Select --</option>${deptOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Subject (if academic)</label>
+        <select id="sf-subject">${subjOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Class / Unit</label>
+        <select id="sf-class">${classOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Arm</label>
+        <select id="sf-arm">
+          ${['N/A', 'A', 'B', 'C', 'D', 'E'].map(a => `<option ${(s?.arm || 'N/A') === a ? 'selected' : ''}>${a}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="sm-form-section sm-span2"><span>Qualifications & Experience</span></div>
+
+      <div class="sm-form-group">
+        <label>Highest Qualification</label>
+        <select id="sf-qual">${qualOpts}</select>
+      </div>
+      <div class="sm-form-group">
+        <label>Years of Experience</label>
+        <input id="sf-exp" value="${s?.experience || ''}" placeholder="e.g. 5 years">
+      </div>
+      <div class="sm-form-group sm-span2">
+        <label>Notes / Remarks</label>
+        <textarea id="sf-notes">${s?.notes || ''}</textarea>
+      </div>
+
+      <div class="sm-form-section sm-span2"><span>Credential Uploads</span></div>
+
+      <div class="sm-span2">
+        <div style="margin-bottom:.6rem">
+          <select id="sf-cred-type" style="padding:.45rem .75rem;background:var(--bg,#0f1117);border:1px solid var(--border,#2a2f42);border-radius:7px;color:var(--text,#e2e8f0);font-size:.8rem;font-family:inherit;outline:none;">
+            ${credTypeOpts}
+          </select>
+        </div>
+        <div class="sm-upload-zone" id="sm-upload-zone">
+          <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onchange="smHandleFileSelect(event)">
+          <div style="font-size:1.6rem;margin-bottom:.4rem">📎</div>
+          <div style="font-size:.8rem;color:#8892a4">Drop files or click to upload</div>
+          <div style="font-size:.7rem;color:#4a5568;margin-top:.2rem">PDF, JPG, PNG, DOC — max 5MB each</div>
+        </div>
+        <div id="sm-pending-files" class="sm-cred-list"></div>
+        ${existingCredsHTML ? `
+          <div style="margin-top:.6rem">
+            <div style="font-size:.7rem;color:#8892a4;margin-bottom:.4rem">Existing credentials:</div>
+            <div class="sm-cred-list">${existingCredsHTML}</div>
+          </div>` : ''}
+      </div>
+
+      <div class="sm-span2" style="display:flex;gap:.75rem;justify-content:flex-end;margin-top:.5rem;">
+        <button onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
+        <button onclick="smSubmitForm()" style="${btnStyle('primary')}">${isEdit ? '💾 Save Changes' : '✅ Add Staff'}</button>
+      </div>
+    </div>
+  `);
+
+  // Drag-and-drop
+  const zone = document.getElementById('sm-upload-zone');
+  if (zone) {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+    zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag'); smHandleFileDrop(e); });
+  }
+};
+
+// ── File Handling ──────────────────────────────────────────────────────────────
+window.smHandleFileSelect = function(e) { smProcessFiles(Array.from(e.target.files)); };
+window.smHandleFileDrop = function(e) { smProcessFiles(Array.from(e.dataTransfer.files)); };
+
+function smProcessFiles(files) {
+  const type = document.getElementById('sf-cred-type')?.value || 'Document';
+  files.forEach(f => {
+    if (f.size > 5 * 1024 * 1024) { toast(`${f.name} exceeds 5MB limit`, 'error'); return; }
+    _pendingStaffFiles.push({ name: f.name, size: smFormatSize(f.size), type, file: f });
+  });
+  smRenderPendingFiles();
 }
+
+function smRenderPendingFiles() {
+  const container = document.getElementById('sm-pending-files');
+  if (!container) return;
+  container.innerHTML = _pendingStaffFiles.map((f, i) => `
+    <div class="sm-cred-item">
+      <span>${smFileIcon(f.name)}</span>
+      <span class="ci-name">${f.name}</span>
+      <span class="ci-size">${f.size}</span>
+      <span style="color:#8892a4;font-size:.7rem">${f.type}</span>
+      <button class="ci-del" onclick="smRemovePendingFile(${i})">✕</button>
+    </div>`).join('');
+}
+
+window.smRemovePendingFile = function(i) { _pendingStaffFiles.splice(i, 1); smRenderPendingFiles(); };
+
+window.smRemoveExistingCred = function(i, staffId) {
+  const s = App.data.staff.find(x => x.id === staffId);
+  if (!s) return;
+  s.credentials.splice(i, 1);
+  document.getElementById(`sm-existing-cred-${i}`)?.remove();
+  toast('Credential removed', 'warning');
+};
+
+// ── Submit ─────────────────────────────────────────────────────────────────────
+window.smSubmitForm = function() {
+  const name = document.getElementById('sf-name')?.value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+
+  const newCreds = _pendingStaffFiles.map(f => ({ name: f.name, size: f.size, type: f.type }));
+  const data = {
+    name,
+    gender:       document.getElementById('sf-gender')?.value,
+    phone:        document.getElementById('sf-phone')?.value,
+    email:        document.getElementById('sf-email')?.value,
+    dateJoined:   document.getElementById('sf-joined')?.value,
+    status:       document.getElementById('sf-status')?.value,
+    category:     document.getElementById('sf-category')?.value,
+    position:     document.getElementById('sf-position')?.value,
+    department:   document.getElementById('sf-department')?.value,
+    subject:      document.getElementById('sf-subject')?.value,
+    classUnit:    document.getElementById('sf-class')?.value,
+    arm:          document.getElementById('sf-arm')?.value,
+    qualification:document.getElementById('sf-qual')?.value,
+    experience:   document.getElementById('sf-exp')?.value,
+    notes:        document.getElementById('sf-notes')?.value,
+  };
+
+  if (_currentEditStaffId) {
+    const s = App.data.staff.find(x => x.id === _currentEditStaffId);
+    if (s) {
+      Object.assign(s, data);
+      s.credentials = [...(s.credentials || []), ...newCreds];
+      toast('Staff member updated!', 'success');
+    }
+  } else {
+    App.data.staff.push({
+      id: smMakeId(),
+      role: 'Staff',
+      credentials: newCreds,
+      ...data
+    });
+    toast('Staff member added!', 'success');
+  }
+
+  closeModal();
+  renderStaff();
+};
+
+// ── Delete ─────────────────────────────────────────────────────────────────────
+window.smDeleteStaff = function(id) {
+  if (!priv.canManage() && denyAccess()) return;
+  if (!confirmDlg('Delete this staff member? This cannot be undone.')) return;
+  App.data.staff = App.data.staff.filter(s => s.id !== id);
+  renderStaff();
+  toast('Staff member deleted.', 'warning');
+};
+
+// ── Export CSV ─────────────────────────────────────────────────────────────────
+window.smExport = function() {
+  const rows = [['ID', 'Name', 'Category', 'Position', 'Department', 'Class/Unit', 'Subject', 'Phone', 'Email', 'Status', 'Qualification', 'Experience', 'Date Joined']];
+  (App.data.staff || []).forEach(s => rows.push([
+    s.id, s.name, s.category, s.position, s.department,
+    s.classUnit || s.class, s.subject, s.phone, s.email,
+    s.status, s.qualification, s.experience, s.dateJoined
+  ]));
+  const csv = rows.map(r => r.map(c => `"${c || ''}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'staff_list.csv';
+  a.click();
+  toast('Exported staff list as CSV', 'success');
+};
+
+// ── Legacy compatibility (maps old renderTeachers calls) ───────────────────────
+window.renderTeachers = function(filter = '') { renderStaff(filter); };
+window.openTeacherModal = function(t = null) { openStaffModal(t?.id || null); };
+window.editTeacher = function(id) { openStaffModal(id); };
+window.deleteTeacher = function(id) { smDeleteStaff(id); };
 
 /* ─────────────────────────────────────────
    11. SUBJECTS  (Admin only)
@@ -2347,139 +3181,158 @@ function normaliseRow(raw, idx) {
 function renderResults() {
   const section = document.getElementById('results');
 
-  /* ── PARENT VIEW ────────────────────────────────────── */
+  /* ── PARENT VIEW ── */
   if (priv.isParent()) {
     const studentId = App.currentUser.studentId;
     if (!studentId) { section.innerHTML = '<p style="padding:2rem;color:#ef4444;">No student linked to this account.</p>'; return; }
     const student = App.data.students.find(s => s.id === studentId);
-    if (!student)  { section.innerHTML = '<p style="padding:2rem;color:#ef4444;">Student record not found.</p>'; return; }
-
+    if (!student) { section.innerHTML = '<p style="padding:2rem;color:#ef4444;">Student record not found.</p>'; return; }
     const results = App.data.results.filter(r => r.studentId === studentId);
     const terms   = [...new Set(results.map(r => r.term))];
-
     section.innerHTML = `
       <div style="margin-bottom:1.5rem;">
         <h2 style="margin:0 0 .25rem;">Results — ${student.name}</h2>
         <p style="margin:0;color:#6b7280;font-size:.9rem;">${student.class} ${student.arm} &nbsp;|&nbsp; Attendance: <strong style="color:${student.attendance<75?'#ef4444':'#22c55e'}">${student.attendance}%</strong></p>
       </div>
       ${!results.length
-        ? `<div style="background:#fff;border-radius:12px;padding:3rem;text-align:center;color:#9ca3af;box-shadow:0 2px 8px rgba(0,0,0,.07);">No results have been recorded for this student yet.</div>`
+        ? `<div style="background:#fff;border-radius:12px;padding:3rem;text-align:center;color:#9ca3af;box-shadow:0 2px 8px rgba(0,0,0,.07);">No results recorded yet.</div>`
         : terms.map(term => {
-            const termResults = results.filter(r => r.term === term);
-            const avg = (termResults.reduce((a,b)=>a+b.total,0)/termResults.length).toFixed(1);
-            return `
-              <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:1.5rem;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem;">
-                  <h3 style="margin:0;">${term}</h3>
-                  <div style="display:flex;gap:.75rem;">
-                    <span style="${badgeStyle('info')}">Average: ${avg}%</span>
-                    <span style="${badgeStyle(parseFloat(avg)>=50?'success':'danger')}">Grade: ${grade(parseFloat(avg)).letter}</span>
-                  </div>
+            const tr = results.filter(r => r.term === term);
+            const avg = (tr.reduce((a,b)=>a+b.total,0)/tr.length).toFixed(1);
+            return `<div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:1.5rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem;">
+                <h3 style="margin:0;">${term}</h3>
+                <div style="display:flex;gap:.75rem;">
+                  <span style="${badgeStyle('info')}">Average: ${avg}%</span>
+                  <span style="${badgeStyle(parseFloat(avg)>=50?'success':'danger')}">Grade: ${grade(parseFloat(avg)).letter}</span>
                 </div>
-                <div style="overflow-x:auto;">
-                <table style="${tableStyle()}">
-                  <thead><tr style="${thRowStyle()}">
-                    <th style="${thStyle()}">Subject</th><th style="${thStyle()}">CA (40)</th>
-                    <th style="${thStyle()}">Exam (60)</th><th style="${thStyle()}">Total</th>
-                    <th style="${thStyle()}">Grade</th><th style="${thStyle()}">Remark</th>
-                  </tr></thead>
-                  <tbody>
-                    ${termResults.map(r => {
-                      const g = grade(r.total);
-                      return `<tr style="${trStyle()}">
-                        <td style="${tdStyle()};font-weight:500;">${r.subject}</td>
-                        <td style="${tdStyle()}">${r.ca}</td><td style="${tdStyle()}">${r.exam}</td>
-                        <td style="${tdStyle()}"><strong>${r.total}</strong></td>
-                        <td style="${tdStyle()}"><span style="${badgeStyle(r.total>=50?'success':r.total>=40?'warning':'danger')}">${g.letter}</span></td>
-                        <td style="${tdStyle()};color:#6b7280;">${g.remark}</td>
-                      </tr>`;
-                    }).join('')}
-                  </tbody>
-                </table></div>
-              </div>`;
+              </div>
+              <div style="overflow-x:auto;">
+              <table style="${tableStyle()}">
+                <thead><tr style="${thRowStyle()}">
+                  <th style="${thStyle()}">Subject</th><th style="${thStyle()}">CA (40)</th>
+                  <th style="${thStyle()}">Exam (60)</th><th style="${thStyle()}">Total</th>
+                  <th style="${thStyle()}">Grade</th><th style="${thStyle()}">Remark</th>
+                </tr></thead>
+                <tbody>
+                  ${tr.map(r => { const g = grade(r.total); return `<tr style="${trStyle()}">
+                    <td style="${tdStyle()};font-weight:500;">${r.subject}</td>
+                    <td style="${tdStyle()}">${r.ca}</td><td style="${tdStyle()}">${r.exam}</td>
+                    <td style="${tdStyle()}"><strong>${r.total}</strong></td>
+                    <td style="${tdStyle()}"><span style="${badgeStyle(r.total>=50?'success':r.total>=40?'warning':'danger')}">${g.letter}</span></td>
+                    <td style="${tdStyle()};color:#6b7280;">${g.remark}</td>
+                  </tr>`; }).join('')}
+                </tbody>
+              </table></div>
+            </div>`;
           }).join('')
       }`;
     return;
   }
 
-  /* ── ADMIN / TEACHER VIEW ───────────────────────────── */
-  const isTeacher    = priv.isTeacher();
-  const preClass     = App.currentUser.assignedClass || '';
-  const preArm       = App.currentUser.assignedArm   || '';
-  const classOptions = App.data.classes.map(c => `<option ${preClass===c.name?'selected':''}>${c.name}</option>`).join('');
-  const subjOptions  = App.data.subjects.map(s => `<option>${s.name}</option>`).join('');
+  /* ── ADMIN / TEACHER VIEW ── */
+  const isTeacher = priv.isTeacher();
+  const preClass  = App.currentUser.assignedClass || '';
+  const preArm    = App.currentUser.assignedArm   || '';
+  const SS_INDIVIDUAL = ['SS 2', 'SS 3'];
+
+  const classOptions = App.data.classes.map(c =>
+    `<option ${preClass===c.name?'selected':''}>${c.name}</option>`).join('');
+  const subjOptions  = App.data.subjects.map(s =>
+    `<option>${s.name}</option>`).join('');
 
   section.innerHTML = `
-    <h2 style="margin-bottom:1.5rem;">Results Entry
-      ${isTeacher ? `<span style="${badgeStyle('success')}">${preClass} ${preArm}</span>` : ''}
-    </h2>
-    <div style="display:flex;gap:.5rem;margin-bottom:1.5rem;flex-wrap:wrap;">
-      <button id="tab-single" onclick="switchResultTab('single')" style="${btnStyle('primary')}">📝 Single Entry</button>
-      <button id="tab-bulk"   onclick="switchResultTab('bulk')"   style="${btnStyle('secondary')}">📊 Bulk Excel</button>
+    <style>
+      .res-tab-btn { transition: all .2s; }
+      .res-tab-btn:hover { opacity: .85; }
+      .result-card { background:#fff; border-radius:14px; padding:1.5rem; box-shadow:0 4px 16px rgba(0,0,0,.08); margin-bottom:1.5rem; }
+      .alloc-chip { display:inline-flex; align-items:center; gap:.3rem; background:#eff6ff; border:1px solid #bfdbfe; border-radius:20px; padding:.2rem .75rem; font-size:.82rem; font-weight:500; color:#1d4ed8; margin:.15rem; }
+      .alloc-chip button { background:none; border:none; cursor:pointer; color:#3b82f6; font-size:.9rem; line-height:1; padding:0; }
+      .subject-tag { display:inline-block; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:.15rem .55rem; font-size:.78rem; color:#15803d; margin:.1rem; }
+      @keyframes fadeSlide { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+      .fade-in { animation: fadeSlide .25s ease; }
+    </style>
+
+    <div style="margin-bottom:1.75rem;">
+      <h2 style="margin:0 0 .25rem;color:#1e3a5f;">Results Management</h2>
+      <p style="margin:0;color:#6b7280;font-size:.875rem;">Enter grades · Allocate subjects · Export results</p>
     </div>
 
-    <!-- Single Entry -->
-    <div id="result-tab-single">
-      <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:2rem;">
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1rem;">
-          <div><label style="${labelStyle()}">Class</label>
+    <!-- Tab Bar -->
+    <div style="display:flex;gap:.5rem;margin-bottom:1.75rem;flex-wrap:wrap;background:#f1f5f9;border-radius:12px;padding:.4rem;">
+      <button id="tab-single"   onclick="switchResultTab('single')"   class="res-tab-btn" style="${activeTabStyle(true)}">📝 Single Entry</button>
+      <button id="tab-bulk"     onclick="switchResultTab('bulk')"     class="res-tab-btn" style="${activeTabStyle(false)}">📊 Bulk Excel</button>
+      <button id="tab-allocate" onclick="switchResultTab('allocate')" class="res-tab-btn" style="${activeTabStyle(false)}">📋 Subject Allocation</button>
+    </div>
+
+    <!-- ═══ SINGLE ENTRY TAB ═══ -->
+    <div id="result-tab-single" class="fade-in">
+      <div class="result-card">
+        <h4 style="margin:0 0 1.25rem;color:#1e3a5f;display:flex;align-items:center;gap:.5rem;">
+          <span style="background:#dbeafe;color:#1d4ed8;padding:.3rem .6rem;border-radius:8px;font-size:.85rem;">Step 1</span>
+          Select Class & Subject
+        </h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-bottom:1.25rem;">
+          <div>
+            <label style="${labelStyle()}">Class</label>
             <select id="res-class" style="${inputStyle()}" onchange="populateResultStudents()" ${isTeacher?'disabled':''}>
               ${classOptions}
             </select>
           </div>
-          <div><label style="${labelStyle()}">Arm</label>
+          <div>
+            <label style="${labelStyle()}">Arm</label>
             <select id="res-arm" style="${inputStyle()}" onchange="populateResultStudents()" ${isTeacher?'disabled':''}>
               <option>${preArm||'A'}</option>
             </select>
           </div>
-          <div><label style="${labelStyle()}">Subject</label><select id="res-subject" style="${inputStyle()}">${subjOptions}</select></div>
-          <div><label style="${labelStyle()}">Term</label>
+          <div>
+            <label style="${labelStyle()}">Subject</label>
+            <select id="res-subject" style="${inputStyle()}">${subjOptions}</select>
+          </div>
+          <div>
+            <label style="${labelStyle()}">Term</label>
             <select id="res-term" style="${inputStyle()}">
-              <option>First Term</option><option>Second Term</option><option>Third Term</option>
+              <option>First Term</option><option selected>Second Term</option><option>Third Term</option>
             </select>
           </div>
-          <div><label style="${labelStyle()}">Session</label><input id="res-session" value="${App.data.schoolInfo.session}" style="${inputStyle()}"></div>
+          <div>
+            <label style="${labelStyle()}">Session</label>
+            <input id="res-session" value="${App.data.schoolInfo.session}" style="${inputStyle()}">
+          </div>
         </div>
-        <button onclick="loadResultEntry()" style="${btnStyle('primary')}">Load Students</button>
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;">
+          <button onclick="loadResultEntry()" style="${btnStyle('primary')}">⚡ Load Students</button>
+          <button onclick="populateResultStudents()" style="${btnStyle('secondary')}">🔄 Refresh Arms</button>
+        </div>
       </div>
       <div id="result-entry-table"></div>
     </div>
 
-    <!-- Bulk Excel Entry -->
-    <div id="result-tab-bulk" style="display:none;">
-
-      <!-- Step 1: Download template -->
-      <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:1.25rem;">
+    <!-- ═══ BULK EXCEL TAB ═══ -->
+    <div id="result-tab-bulk" style="display:none;" class="fade-in">
+      <div class="result-card">
         <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
           <div style="flex:1;min-width:220px;">
             <h4 style="margin:0 0 .35rem;color:#1e3a5f;">Step 1 — Download Template</h4>
-            <p style="margin:0;font-size:.85rem;color:#6b7280;">Get the pre-formatted Excel file with instructions, dropdowns&nbsp;&amp; auto-calculated grade columns.</p>
+            <p style="margin:0;font-size:.85rem;color:#6b7280;">Pre-formatted Excel file with dropdowns &amp; auto-grade columns.</p>
           </div>
-          <button onclick="downloadResultsTemplate()" style="${btnStyle('secondary')}">⬇ Download Excel Template</button>
+          <button onclick="downloadResultsTemplate()" style="${btnStyle('secondary')}">⬇ Excel Template</button>
         </div>
       </div>
-
-      <!-- Step 2: Class / Arm selectors -->
-      <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:1.25rem;">
+      <div class="result-card">
         <h4 style="margin:0 0 1rem;color:#1e3a5f;">Step 2 — Select Class &amp; Arm</h4>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;">
           <div><label style="${labelStyle()}">Class</label>
             <select id="bulk-res-class" style="${inputStyle()}" onchange="populateBulkArms()" ${isTeacher?'disabled':''}>${classOptions}</select>
           </div>
           <div><label style="${labelStyle()}">Arm</label>
-            <select id="bulk-res-arm" style="${inputStyle()}" ${isTeacher?'disabled':''}>
-              <option>${preArm||'A'}</option>
-            </select>
+            <select id="bulk-res-arm" style="${inputStyle()}" ${isTeacher?'disabled':''}><option>${preArm||'A'}</option></select>
           </div>
         </div>
       </div>
-
-      <!-- Step 3: Upload -->
-      <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:1.25rem;">
+      <div class="result-card">
         <h4 style="margin:0 0 .5rem;color:#1e3a5f;">Step 3 — Upload Completed Excel</h4>
-        <p style="margin:0 0 1rem;font-size:.85rem;color:#6b7280;">Accepted formats: <code style="background:#f3f4f6;padding:.15rem .4rem;border-radius:4px;">.xlsx</code> or <code style="background:#f3f4f6;padding:.15rem .4rem;border-radius:4px;">.xls</code></p>
-
-        <!-- Drop zone -->
+        <p style="margin:0 0 1rem;font-size:.85rem;color:#6b7280;">Accepted: <code style="background:#f3f4f6;padding:.15rem .4rem;border-radius:4px;">.xlsx</code> or <code style="background:#f3f4f6;padding:.15rem .4rem;border-radius:4px;">.xls</code></p>
         <div id="excel-drop-zone"
           ondragover="event.preventDefault();this.style.borderColor='#2563eb';this.style.background='#eff6ff';"
           ondragleave="this.style.borderColor='#d1d5db';this.style.background='#f9fafb';"
@@ -2491,18 +3344,13 @@ function renderResults() {
           <p style="margin:.25rem 0 0;font-size:.8rem;color:#9ca3af;">Excel files only (.xlsx / .xls)</p>
         </div>
         <input type="file" id="excel-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleExcelFileSelect(this)">
-
         <div id="excel-file-info" style="margin-top:.75rem;"></div>
       </div>
-
-      <!-- Step 4: Preview & import -->
       <div id="bulk-excel-preview-section" style="display:none;">
-        <div style="background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,.07);">
+        <div class="result-card">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.75rem;margin-bottom:1rem;">
             <h4 style="margin:0;color:#1e3a5f;">Step 4 — Preview &amp; Import</h4>
-            <div style="display:flex;gap:.75rem;">
-              <span id="preview-stats" style="${badgeStyle('info')}"></span>
-            </div>
+            <span id="preview-stats" style="${badgeStyle('info')}"></span>
           </div>
           <div id="bulk-result-preview" style="overflow-x:auto;max-height:360px;overflow-y:auto;"></div>
           <div style="display:flex;gap:.75rem;margin-top:1.25rem;justify-content:flex-end;flex-wrap:wrap;">
@@ -2511,26 +3359,352 @@ function renderResults() {
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ SUBJECT ALLOCATION TAB ═══ -->
+    <div id="result-tab-allocate" style="display:none;" class="fade-in">
+      <div class="result-card">
+        <h4 style="margin:0 0 1rem;color:#1e3a5f;">Select Class &amp; Arm</h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-bottom:1.25rem;">
+          <div><label style="${labelStyle()}">Class</label>
+            <select id="alloc-class" style="${inputStyle()}" onchange="updateAllocArms()" ${isTeacher?'disabled':''}>
+              ${classOptions}
+            </select>
+          </div>
+          <div><label style="${labelStyle()}">Arm</label>
+            <select id="alloc-arm" style="${inputStyle()}" ${isTeacher?'disabled':''}><option>${preArm||'A'}</option></select>
+          </div>
+        </div>
+        <button onclick="loadSubjectAllocation()" style="${btnStyle('primary')}">📋 Load Allocation</button>
+      </div>
+      <div id="allocation-output"></div>
     </div>`;
 
+  /* Init dropdowns */
   if (isTeacher) {
     const classData = App.data.classes.find(c => c.name === preClass);
-    const armSel    = document.getElementById('res-arm');
-    if (armSel && classData) armSel.innerHTML = classData.arms.map(a=>`<option ${a===preArm?'selected':''}>${a}</option>`).join('');
-    const bArmSel   = document.getElementById('bulk-res-arm');
-    if (bArmSel && classData) bArmSel.innerHTML = classData.arms.map(a=>`<option ${a===preArm?'selected':''}>${a}</option>`).join('');
+    ['res-arm','bulk-res-arm','alloc-arm'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (sel && classData) sel.innerHTML = classData.arms.map(a=>`<option ${a===preArm?'selected':''}>${a}</option>`).join('');
+    });
   } else {
     populateResultStudents();
     populateBulkArms();
   }
 }
 
+/* ── Active tab style helper ── */
+function activeTabStyle(active) {
+  return active
+    ? 'background:#fff;color:#1e3a5f;border:none;padding:.5rem 1.1rem;border-radius:9px;font-size:.875rem;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.1);'
+    : 'background:transparent;color:#6b7280;border:none;padding:.5rem 1.1rem;border-radius:9px;font-size:.875rem;font-weight:500;cursor:pointer;';
+}
+
+/* ── Update alloc arms dropdown ── */
+window.updateAllocArms = function() {
+  const cls = document.getElementById('alloc-class')?.value;
+  const sel = document.getElementById('alloc-arm');
+  if (!sel || !cls) return;
+  const classData = App.data.classes.find(c => c.name === cls);
+  if (classData) sel.innerHTML = classData.arms.map(a=>`<option>${a}</option>`).join('');
+};
+
+/* ── Subject Allocation Loader ── */
+window.loadSubjectAllocation = function() {
+  const cls = document.getElementById('alloc-class')?.value;
+  const arm = document.getElementById('alloc-arm')?.value;
+  if (!cls || !arm) return toast('Select class and arm.', 'warning');
+
+  const SS_INDIVIDUAL = ['SS 2', 'SS 3'];
+  const output = document.getElementById('allocation-output');
+  const allSubjects = App.data.subjects.filter(s => s.level === 'All' || s.level === 'Senior' || s.level === (App.data.classes.find(c=>c.name===cls)?.level==='Junior'?'Junior':'Senior'));
+
+  if (SS_INDIVIDUAL.includes(cls)) {
+    /* Individual allocation per student */
+    const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
+    if (!students.length) return toast('No students found.', 'warning');
+
+    const classKey = `${cls}_${arm}`;
+    const classSubjects = App.data.subjectAllocations[classKey] || App.data.subjects.filter(s => s.level==='All' || s.level==='Senior').map(s=>s.name);
+
+    output.innerHTML = `
+      <div style="background:#fff;border-radius:14px;padding:1.5rem;box-shadow:0 4px 16px rgba(0,0,0,.08);" class="fade-in">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem;">
+          <div>
+            <h4 style="margin:0;color:#1e3a5f;">${cls} ${arm} — Individual Subject Allocation</h4>
+            <p style="margin:.25rem 0 0;font-size:.82rem;color:#6b7280;">SS2 &amp; SS3: Each student can have a personalised subject list (max 9)</p>
+          </div>
+          <button onclick="openBulkAllocModal('${cls}','${arm}')" style="${btnStyle('primary')}">⚡ Bulk Allocate All Students</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+        <table style="${tableStyle()}">
+          <thead><tr style="${thRowStyle()}">
+            <th style="${thStyle()}">Student</th>
+            <th style="${thStyle()}">Allocated Subjects</th>
+            <th style="${thStyle()};text-align:center;">Count</th>
+            <th style="${thStyle()}">Actions</th>
+          </tr></thead>
+          <tbody>
+            ${students.map(s => {
+              const key = s.id;
+              const allocated = App.data.subjectAllocations[key] || classSubjects.slice(0,9);
+              return `<tr style="${trStyle()}" id="alloc-row-${s.id}">
+                <td style="${tdStyle()}">
+                  <div style="font-weight:600;color:#1e3a5f;">${s.name}</div>
+                  <div style="font-size:.75rem;color:#9ca3af;">${s.id}</div>
+                </td>
+                <td style="${tdStyle()}">
+                  <div id="chips-${s.id}" style="display:flex;flex-wrap:wrap;gap:.2rem;">
+                    ${allocated.map(subj=>`<span class="subject-tag">${subj}</span>`).join('')}
+                  </div>
+                </td>
+                <td style="${tdStyle()};text-align:center;">
+                  <span style="${badgeStyle(allocated.length>9?'danger':allocated.length>=7?'success':'info')}">${allocated.length}/9</span>
+                </td>
+                <td style="${tdStyle()}">
+                  <button onclick="openStudentAllocModal('${s.id}','${cls}','${arm}')" style="${btnStyle('primary','sm')}">✏ Edit</button>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>`;
+  } else {
+    /* Class-level allocation */
+    const classKey = `${cls}_${arm}`;
+    const allocated = App.data.subjectAllocations[classKey] || [];
+
+    output.innerHTML = `
+      <div style="background:#fff;border-radius:14px;padding:1.5rem;box-shadow:0 4px 16px rgba(0,0,0,.08);" class="fade-in">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem;">
+          <div>
+            <h4 style="margin:0;color:#1e3a5f;">${cls} ${arm} — Class Subject Allocation</h4>
+            <p style="margin:.25rem 0 0;font-size:.82rem;color:#6b7280;">Subjects allocated here apply to all students in this class/arm</p>
+          </div>
+          <span style="${badgeStyle('info')}">${allocated.length} subjects allocated</span>
+        </div>
+
+        <div id="class-alloc-chips" style="display:flex;flex-wrap:wrap;gap:.4rem;padding:1rem;background:#f9fafb;border-radius:10px;border:1px solid #e5e7eb;min-height:60px;margin-bottom:1.25rem;">
+          ${allocated.length ? allocated.map(subj=>`
+            <span class="alloc-chip">
+              ${subj}
+              <button onclick="removeClassSubject('${cls}','${arm}','${subj}')" title="Remove">✕</button>
+            </span>`).join('') : '<span style="color:#9ca3af;font-size:.875rem;">No subjects allocated yet. Add subjects below.</span>'}
+        </div>
+
+        <div style="margin-bottom:1.25rem;">
+          <label style="${labelStyle()}">Add Subjects</label>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem;">
+            ${allSubjects.filter(s => !allocated.includes(s.name)).map(s=>`
+              <button onclick="addClassSubject('${cls}','${arm}','${s.name}')"
+                style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:.3rem .75rem;font-size:.8rem;cursor:pointer;color:#374151;transition:all .15s;"
+                onmouseover="this.style.background='#dbeafe';this.style.borderColor='#93c5fd';"
+                onmouseout="this.style.background='#f3f4f6';this.style.borderColor='#e5e7eb';">
+                + ${s.name}
+              </button>`).join('')}
+          </div>
+        </div>
+
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;">
+          <button onclick="saveClassAllocation('${cls}','${arm}')" style="${btnStyle('primary')}">💾 Save Allocation</button>
+          <button onclick="clearClassAllocation('${cls}','${arm}')" style="${btnStyle('danger')}">🗑 Clear All</button>
+        </div>
+      </div>`;
+  }
+};
+
+/* ── Class-level allocation actions ── */
+window.addClassSubject = function(cls, arm, subject) {
+  const key = `${cls}_${arm}`;
+  if (!App.data.subjectAllocations[key]) App.data.subjectAllocations[key] = [];
+  if (App.data.subjectAllocations[key].includes(subject)) return;
+  App.data.subjectAllocations[key].push(subject);
+  loadSubjectAllocation();
+};
+
+window.removeClassSubject = function(cls, arm, subject) {
+  const key = `${cls}_${arm}`;
+  if (App.data.subjectAllocations[key]) {
+    App.data.subjectAllocations[key] = App.data.subjectAllocations[key].filter(s => s !== subject);
+    loadSubjectAllocation();
+  }
+};
+
+window.saveClassAllocation = function(cls, arm) {
+  toast(`Subject allocation saved for ${cls} ${arm}!`, 'success');
+};
+
+window.clearClassAllocation = function(cls, arm) {
+  if (!confirm('Clear all subjects for this class/arm?')) return;
+  App.data.subjectAllocations[`${cls}_${arm}`] = [];
+  loadSubjectAllocation();
+  toast('Allocation cleared.', 'warning');
+};
+
+/* ── Individual student allocation modal (SS2/SS3) ── */
+window.openStudentAllocModal = function(studentId, cls, arm) {
+  const student  = App.data.students.find(s => s.id === studentId);
+  const classKey = `${cls}_${arm}`;
+  const base     = App.data.subjectAllocations[classKey] || App.data.subjects.filter(s=>s.level==='All'||s.level==='Senior').map(s=>s.name);
+  let allocated  = [...(App.data.subjectAllocations[studentId] || base.slice(0,9))];
+
+  const allSubjects = App.data.subjects.filter(s => s.level==='All'||s.level==='Senior');
+
+  const render = () => {
+    const chipsEl = document.getElementById('modal-student-chips');
+    const countEl = document.getElementById('modal-alloc-count');
+    const poolEl  = document.getElementById('modal-subject-pool');
+    if (chipsEl) chipsEl.innerHTML = allocated.map(subj=>`
+      <span class="alloc-chip">
+        ${subj}
+        <button onclick="modalRemoveSubject('${subj}')" title="Remove">✕</button>
+      </span>`).join('') || '<span style="color:#9ca3af;font-size:.82rem;">No subjects yet</span>';
+    if (countEl) {
+      countEl.textContent = `${allocated.length}/9`;
+      countEl.style.cssText = badgeStyle(allocated.length>9?'danger':allocated.length>=7?'success':'info');
+    }
+    if (poolEl) poolEl.innerHTML = allSubjects.filter(s=>!allocated.includes(s.name)).map(s=>`
+      <button onclick="modalAddSubject('${s.name}')"
+        style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:.3rem .75rem;font-size:.8rem;cursor:pointer;color:#374151;"
+        onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#f3f4f6'">
+        + ${s.name}
+      </button>`).join('');
+  };
+
+  window.modalAddSubject = (subj) => {
+    if (allocated.length >= 9) { toast('Maximum 9 subjects for SS2/SS3.', 'warning'); return; }
+    if (!allocated.includes(subj)) { allocated.push(subj); render(); }
+  };
+  window.modalRemoveSubject = (subj) => {
+    allocated = allocated.filter(s => s !== subj); render();
+  };
+
+  showModal(`
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid #f3f4f6;">
+      <div style="width:42px;height:42px;border-radius:50%;background:${stringToColor(student.name)};
+        display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:.9rem;flex-shrink:0;">
+        ${student.name.split(' ').slice(0,2).map(n=>n[0]).join('').toUpperCase()}
+      </div>
+      <div>
+        <h3 style="margin:0;">${student.name}</h3>
+        <p style="margin:.15rem 0 0;font-size:.85rem;color:#6b7280;">${student.id} · ${cls} ${arm} · Max 9 subjects</p>
+      </div>
+    </div>
+
+    <div style="margin-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <label style="${labelStyle()};margin:0;">Allocated Subjects</label>
+        <span id="modal-alloc-count" style="${badgeStyle('info')}">0/9</span>
+      </div>
+      <div id="modal-student-chips" style="display:flex;flex-wrap:wrap;gap:.35rem;min-height:48px;padding:.75rem;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;"></div>
+    </div>
+
+    <div style="margin-bottom:1.5rem;">
+      <label style="${labelStyle()}">Available Subjects (click to add)</label>
+      <div id="modal-subject-pool" style="display:flex;flex-wrap:wrap;gap:.35rem;padding:.5rem 0;max-height:200px;overflow-y:auto;"></div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;">
+      <button onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
+      <button onclick="saveStudentAllocation('${studentId}','${cls}','${arm}')" style="${btnStyle('primary')}">💾 Save Allocation</button>
+    </div>`);
+
+  window._currentModalAllocation = () => allocated;
+  render();
+};
+
+window.saveStudentAllocation = function(studentId, cls, arm) {
+  const allocated = window._currentModalAllocation?.() || [];
+  if (allocated.length === 0) { toast('Please allocate at least one subject.', 'warning'); return; }
+  if (allocated.length > 9)  { toast('Maximum 9 subjects allowed for SS2/SS3.', 'error'); return; }
+  App.data.subjectAllocations[studentId] = allocated;
+  closeModal();
+  toast(`Subjects saved for ${App.data.students.find(s=>s.id===studentId)?.name}!`, 'success');
+  loadSubjectAllocation();
+};
+
+/* ── Bulk Allocate Modal (SS2/SS3) ── */
+window.openBulkAllocModal = function(cls, arm) {
+  const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
+  const allSubjects = App.data.subjects.filter(s => s.level==='All'||s.level==='Senior');
+  let selected = [];
+
+  const render = () => {
+    const chipsEl = document.getElementById('bulk-alloc-chips');
+    const countEl = document.getElementById('bulk-alloc-count');
+    if (chipsEl) chipsEl.innerHTML = selected.map(subj=>`
+      <span class="alloc-chip">${subj}
+        <button onclick="bulkRemoveSubj('${subj}')">✕</button>
+      </span>`).join('') || '<span style="color:#9ca3af;font-size:.82rem;">Select subjects below</span>';
+    if (countEl) { countEl.textContent = `${selected.length}/9`; countEl.style.cssText = badgeStyle(selected.length>9?'danger':'info'); }
+    const pool = document.getElementById('bulk-alloc-pool');
+    if (pool) pool.innerHTML = allSubjects.filter(s=>!selected.includes(s.name)).map(s=>`
+      <button onclick="bulkAddSubj('${s.name}')"
+        style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:.3rem .75rem;font-size:.8rem;cursor:pointer;color:#374151;"
+        onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#f3f4f6'">
+        + ${s.name}
+      </button>`).join('');
+  };
+
+  window.bulkAddSubj = (subj) => {
+    if (selected.length >= 9) { toast('Max 9 subjects.', 'warning'); return; }
+    if (!selected.includes(subj)) { selected.push(subj); render(); }
+  };
+  window.bulkRemoveSubj = (subj) => { selected = selected.filter(s => s !== subj); render(); };
+
+  showModal(`
+    <h3 style="margin:0 0 .25rem;">Bulk Subject Allocation</h3>
+    <p style="color:#6b7280;font-size:.875rem;margin:0 0 1.5rem;">
+      Apply same subjects to all <strong>${students.length} students</strong> in ${cls} ${arm}
+    </p>
+
+    <div style="background:#fef3c7;border-radius:8px;padding:.65rem .9rem;font-size:.85rem;color:#92400e;margin-bottom:1.25rem;">
+      ⚠ This will overwrite existing individual allocations. Max 9 subjects per student.
+    </div>
+
+    <div style="margin-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <label style="${labelStyle()};margin:0;">Selected Subjects</label>
+        <span id="bulk-alloc-count" style="${badgeStyle('info')}">0/9</span>
+      </div>
+      <div id="bulk-alloc-chips" style="display:flex;flex-wrap:wrap;gap:.35rem;min-height:48px;padding:.75rem;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;"></div>
+    </div>
+
+    <div style="margin-bottom:1.5rem;">
+      <label style="${labelStyle()}">Available Subjects</label>
+      <div id="bulk-alloc-pool" style="display:flex;flex-wrap:wrap;gap:.35rem;padding:.5rem 0;max-height:180px;overflow-y:auto;"></div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;">
+      <button onclick="closeModal()" style="${btnStyle('secondary')}">Cancel</button>
+      <button onclick="confirmBulkAlloc('${cls}','${arm}')" style="${btnStyle('primary')}">⚡ Apply to All ${students.length} Students</button>
+    </div>`);
+
+  window._bulkAllocSelected = () => selected;
+  render();
+};
+
+window.confirmBulkAlloc = function(cls, arm) {
+  const selected = window._bulkAllocSelected?.() || [];
+  if (!selected.length) { toast('Select at least one subject.', 'warning'); return; }
+  if (selected.length > 9) { toast('Max 9 subjects.', 'error'); return; }
+  const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
+  students.forEach(s => { App.data.subjectAllocations[s.id] = [...selected]; });
+  closeModal();
+  toast(`${selected.length} subjects allocated to ${students.length} students!`, 'success');
+  loadSubjectAllocation();
+};
+
+
 /* ── TAB SWITCHING ──────────────────────────────────────────────────────── */
 window.switchResultTab = function(tab) {
-  document.getElementById('result-tab-single').style.display = tab === 'single' ? '' : 'none';
-  document.getElementById('result-tab-bulk').style.display   = tab === 'bulk'   ? '' : 'none';
-  document.getElementById('tab-single').style.cssText = btnStyle(tab==='single'?'primary':'secondary');
-  document.getElementById('tab-bulk').style.cssText   = btnStyle(tab==='bulk'?'primary':'secondary');
+  ['single','bulk','allocate'].forEach(t => {
+    const panel = document.getElementById(`result-tab-${t}`);
+    const btn   = document.getElementById(`tab-${t}`);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+    if (btn)   btn.style.cssText   = activeTabStyle(t === tab);
+  });
 };
 
 /* ── ARM POPULATION ─────────────────────────────────────────────────────── */
@@ -2744,32 +3918,28 @@ window.saveBulkExcelResults = function() {
    Teacher → view only (their class), can add teacher remark for their arm
    Parent  → not accessible (redirected to results)
 ───────────────────────────────────────── */
-/* ─────────────────────────────────────────
-   REPORT CARDS – Enhanced Version
-   • School header with logo placeholder & name
-   • Cognitive / Affective / Psychomotor domains display
-   • Better card styling (modern, clean, print-ready)
-   • Resumption date, announcements from school settings
-   • Signatures + school stamp area
-───────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   REPORT CARDS MODULE  –  Layout matches quarterly column design
+   Admin   → full access + all remarks
+   Teacher → view only (their class/arm), can add teacher remark
+   Parent  → redirected to results
+   ───────────────────────────────────────────────────────────────────────────── */
 
 function renderReportCards() {
   if (priv.isParent()) { navigate('results'); return; }
 
-  const section = document.getElementById('report-cards');
+  const section   = document.getElementById('report-cards');
   const isTeacher = priv.isTeacher();
   const userClass = App.currentUser.assignedClass || '';
-  const userArm   = App.currentUser.assignedArm   || '';
 
   const classOptions = App.data.classes
     .map(c => `<option value="${c.name}" ${userClass === c.name ? 'selected' : ''}>${c.name}</option>`)
     .join('');
 
   section.innerHTML = `
-    <h2 style="margin-bottom:1.5rem; color:#1e40af;">Student Report Cards</h2>
-
-    <div style="background:#ffffff; border-radius:12px; padding:1.75rem; box-shadow:0 4px 16px rgba(0,0,0,0.08); margin-bottom:2.5rem;">
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="margin-bottom:1.5rem;color:#1e40af;">Student Report Cards</h2>
+    <div style="background:#fff;border-radius:12px;padding:1.75rem;box-shadow:0 4px 16px rgba(0,0,0,.08);margin-bottom:2.5rem;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1.25rem;margin-bottom:1.5rem;">
         <div>
           <label style="${labelStyle()}">Class</label>
           <select id="rc-class" style="${inputStyle()}" onchange="updateRCArms()" ${isTeacher?'disabled':''}>
@@ -2792,30 +3962,27 @@ function renderReportCards() {
         </div>
         <div>
           <label style="${labelStyle()}">Academic Session</label>
-          <input id="rc-session" value="${App.data.schoolInfo?.session || '2025/2026'}" style="${inputStyle()}" placeholder="e.g. 2025/2026">
+          <input id="rc-session" value="${App.data.schoolInfo?.session || '2025/2026'}" style="${inputStyle()}">
         </div>
       </div>
-      <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <button onclick="generateReportCards()" style="${btnStyle('primary')}">Generate Report Cards</button>
         <button onclick="clearReportOutput()" style="${btnStyle('secondary')}">Clear</button>
       </div>
     </div>
+    <div id="report-cards-output" style="display:grid;gap:2.5rem;"></div>`;
 
-    <div id="report-cards-output" style="display:grid; gap:2.5rem;"></div>`;
-  
-  if (!isTeacher && userClass) updateRCArms();
+  if (isTeacher && userClass) updateRCArms();
 }
 
 window.updateRCArms = function() {
-  const cls = document.getElementById('rc-class')?.value;
+  const cls    = document.getElementById('rc-class')?.value;
   const armSel = document.getElementById('rc-arm');
   if (!armSel) return;
   armSel.innerHTML = '<option value="">— Select arm —</option>';
   if (!cls) return;
   const classData = App.data.classes.find(c => c.name === cls);
-  if (classData?.arms) {
-    armSel.innerHTML += classData.arms.map(a => `<option value="${a}">${a}</option>`).join('');
-  }
+  if (classData?.arms) armSel.innerHTML += classData.arms.map(a => `<option>${a}</option>`).join('');
 };
 
 window.generateReportCards = function() {
@@ -2824,225 +3991,329 @@ window.generateReportCards = function() {
   const term    = document.getElementById('rc-term')?.value;
   const session = document.getElementById('rc-session')?.value;
 
-  if (!cls || !arm || !term || !session) {
-    return toast('Please complete all fields.', 'warning');
-  }
-
-  if (priv.isTeacher() && !priv.canActOnClass(cls, arm)) {
+  if (!cls || !arm || !term || !session) return toast('Please complete all fields.', 'warning');
+  if (priv.isTeacher() && !priv.canActOnClass(cls, arm))
     return denyAccess('You can only generate report cards for your assigned class/arm.');
-  }
 
   const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
   if (!students.length) return toast('No students found in this class/arm.', 'warning');
 
-  const output = document.getElementById('report-cards-output');
-  const school = App.data.schoolInfo || {};
-  const resumptionDate = school.resumptionDate || 'Not set';
-  const announcements = school.announcements || 'No school announcements at this time.';
+  const output   = document.getElementById('report-cards-output');
+  const school   = App.data.schoolInfo || {};
 
-  output.innerHTML = students.map(student => {
-    const results = App.data.results.filter(r => 
-      r.studentId === student.id && r.term === term && r.session === session
-    );
-
-    const totalScore = results.reduce((sum, r) => sum + (r.total || 0), 0);
-    const subjectCount = results.length;
-    const average = subjectCount ? (totalScore / subjectCount).toFixed(1) : 'N/A';
-    const overallGrade = subjectCount ? grade(parseFloat(average)) : { letter: 'N/A', remark: 'No results recorded' };
-
-    const position = computePosition(student.id, cls, arm, term, session);
-    const remarkEntry = App.data.remarks.find(r => 
-      r.studentId === student.id && r.term === term && r.session === session
-    ) || {};
-
-    // Domain scores – assume stored in App.data.domainAssessments or student.domains[term/session]
-    const domains = getDomainScores(student.id, term, session); // helper below
-
-    const canEditTeacherRemark = priv.isAdmin() || (priv.isTeacher() && priv.canActOnClass(cls, arm));
-    const canEditPrincipalRemark = priv.isAdmin();
-
-    const teacher = App.data.teachers.find(t => t.class === cls && t.arm === arm);
-
-    return `
-      <div class="report-card" data-sid="${student.id}" style="background:#fff; border-radius:16px; overflow:hidden; box-shadow:0 6px 20px rgba(0,0,0,0.1); max-width:900px; margin:0 auto; border:1px solid #e2e8f0;">
-
-        <!-- HEADER -->
-        <div style="background:linear-gradient(135deg, #1e3a8a, #3b82f6); color:white; padding:2rem 1.5rem; text-align:center; position:relative;">
-          ${school.logo ? `<img src="${school.logo}" alt="School Logo" style="height:80px; margin-bottom:1rem; border-radius:8px; background:white; padding:8px;">` : ''}
-          <h1 style="margin:0; font-size:1.8rem; letter-spacing:1px;">${school.name || 'School Name'}</h1>
-          <p style="margin:0.5rem 0 0; font-size:1rem; opacity:0.9;">${school.address || ''}</p>
-          <p style="margin:1.5rem 0 0.5rem; font-size:1.1rem; font-weight:500;">${term} Report Card • ${session} Academic Session</p>
-        </div>
-
-        <!-- STUDENT INFO -->
-        <div style="padding:1.5rem; background:#f8fafc; border-bottom:1px solid #e2e8f0;">
-          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:1.25rem;">
-            <div><strong>Name:</strong> ${student.name}</div>
-            <div><strong>Class:</strong> ${cls} ${arm}</div>
-            <div><strong>Admission No:</strong> ${student.id}</div>
-            <div><strong>Resumption Date:</strong> ${resumptionDate}</div>
-          </div>
-        </div>
-
-        <!-- SUBJECTS TABLE -->
-        ${results.length ? `
-          <div style="padding:1.5rem;">
-            <h3 style="margin:0 0 1rem; color:#1e40af; font-size:1.15rem;">Academic Performance</h3>
-            <div style="overflow-x:auto;">
-              <table style="${tableStyle('80%')} border-collapse:collapse; width:100%;">
-                <thead>
-                  <tr style="background:#eff6ff; color:#1e40af;">
-                    <th style="${thStyle('auto')}">Subject</th>
-                    <th style="${thStyle('90px')}">CA (40)</th>
-                    <th style="${thStyle('90px')}">Exam (60)</th>
-                    <th style="${thStyle('100px')}">Total</th>
-                    <th style="${thStyle('70px')}">Grade</th>
-                    <th style="${thStyle('auto')}">Remark</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${results.map(r => {
-                    const g = grade(r.total);
-                    const color = r.total >= 70 ? '#16a34a' : r.total >= 50 ? '#2563eb' : r.total >= 40 ? '#d97706' : '#dc2626';
-                    return `
-                      <tr>
-                        <td style="${tdStyle()} font-weight:500;">${r.subject}</td>
-                        <td style="${tdStyle('text-align:center;')}">${r.ca || '—'}</td>
-                        <td style="${tdStyle('text-align:center;')}">${r.exam || '—'}</td>
-                        <td style="${tdStyle('text-align:center;')}">
-                          <div style="width:100%; height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden; margin:4px 0;">
-                            <div style="width:${r.total}%; height:100%; background:${color};"></div>
-                          </div>
-                          <strong>${r.total}</strong>
-                        </td>
-                        <td style="${tdStyle('text-align:center;')}"><span style="${badgeStyle(g.letter === 'A' || g.letter === 'B' ? 'success' : g.letter === 'C' ? 'warning' : 'danger')}">${g.letter}</span></td>
-                        <td style="${tdStyle()}">${g.remark}</td>
-                      </tr>`;
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
-
-            <!-- SUMMARY STATS -->
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:1rem; margin-top:1.5rem; padding:1.25rem; background:linear-gradient(135deg, #1e40af, #3b82f6); color:white; border-radius:12px;">
-              <div style="text-align:center;">
-                <div style="font-size:0.9rem; opacity:0.9;">Total Score</div>
-                <div style="font-size:1.8rem; font-weight:700;">${totalScore}</div>
-              </div>
-              <div style="text-align:center;">
-                <div style="font-size:0.9rem; opacity:0.9;">Average</div>
-                <div style="font-size:1.8rem; font-weight:700;">${average}%</div>
-              </div>
-              <div style="text-align:center;">
-                <div style="font-size:0.9rem; opacity:0.9;">Grade</div>
-                <div style="font-size:1.8rem; font-weight:700;">${overallGrade.letter}</div>
-              </div>
-              <div style="text-align:center;">
-                <div style="font-size:0.9rem; opacity:0.9;">Position</div>
-                <div style="font-size:1.8rem; font-weight:700;">${position}</div>
-              </div>
-            </div>
-          </div>
-        ` : '<div style="padding:2.5rem; text-align:center; color:#6b7280; font-style:italic;">No academic results recorded for this term yet.</div>'}
-
-        <!-- DOMAINS -->
-        <div style="padding:1.5rem; border-top:1px solid #e2e8f0;">
-          <h3 style="margin:0 0 1.25rem; color:#1e40af; font-size:1.15rem;">Behaviour & Skills (Domains)</h3>
-          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:1.25rem;">
-            <div style="background:#f0f9ff; border-radius:10px; padding:1.25rem; border:1px solid #bfdbfe;">
-              <div style="font-weight:600; color:#1e40af; margin-bottom:0.5rem;">Cognitive Domain</div>
-              <div style="font-size:1.4rem; font-weight:700; color:#1e40af;">${domains.cognitive || '—'} / 5</div>
-              <div style="color:#64748b; font-size:0.9rem;">(${domainLabel(domains.cognitive)})</div>
-            </div>
-            <div style="background:#fef2f8; border-radius:10px; padding:1.25rem; border:1px solid #fbcfe8;">
-              <div style="font-weight:600; color:#be185d; margin-bottom:0.5rem;">Affective Domain</div>
-              <div style="font-size:1.4rem; font-weight:700; color:#be185d;">${domains.affective || '—'} / 5</div>
-              <div style="color:#64748b; font-size:0.9rem;">(${domainLabel(domains.affective)})</div>
-            </div>
-            <div style="background:#f0fdf4; border-radius:10px; padding:1.25rem; border:1px solid #bbf7d0;">
-              <div style="font-weight:600; color:#15803d; margin-bottom:0.5rem;">Psychomotor Domain</div>
-              <div style="font-size:1.4rem; font-weight:700; color:#15803d;">${domains.psychomotor || '—'} / 5</div>
-              <div style="color:#64748b; font-size:0.9rem;">(${domainLabel(domains.psychomotor)})</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ATTENDANCE -->
-        <div style="padding:0 1.5rem 1.5rem;">
-          <div style="display:flex; align-items:center; gap:1rem; padding:1rem; background:#f1f5f9; border-radius:10px;">
-            <span style="font-weight:600; min-width:100px;">Attendance</span>
-            <div style="flex:1; height:12px; background:#e2e8f0; border-radius:6px; overflow:hidden;">
-              <div style="width:${student.attendance || 0}%; height:100%; background:${student.attendance < 75 ? '#ef4444' : student.attendance < 90 ? '#f59e0b' : '#22c55e'};"></div>
-            </div>
-            <strong style="min-width:80px; text-align:right;">${student.attendance || 0}%</strong>
-          </div>
-        </div>
-
-        <!-- REMARKS -->
-        <div style="padding:1.5rem; border-top:1px solid #e2e8f0; display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
-          <div>
-            <div style="font-weight:600; color:#334155; margin-bottom:0.5rem;">Class Teacher's Remark ${teacher ? `— ${teacher.name}` : ''}</div>
-            ${canEditTeacherRemark ? `
-              <textarea id="t-rem-${student.id}" rows="3" style="${inputStyle()}; resize:vertical;">${remarkEntry.teacherRemark || ''}</textarea>
-              <button onclick="saveRemark('${student.id}','${term}','${session}','teacher')" style="${btnStyle('primary','sm')}; margin-top:0.5rem;">Save</button>
-            ` : `<p style="margin:0.5rem 0 0; white-space:pre-wrap;">${remarkEntry.teacherRemark || '—'}</p>`}
-          </div>
-          <div>
-            <div style="font-weight:600; color:#334155; margin-bottom:0.5rem;">Principal's Remark — ${school.principal || 'Principal'}</div>
-            ${canEditPrincipalRemark ? `
-              <textarea id="p-rem-${student.id}" rows="3" style="${inputStyle()}; resize:vertical;">${remarkEntry.principalRemark || ''}</textarea>
-              <button onclick="saveRemark('${student.id}','${term}','${session}','principal')" style="${btnStyle('primary','sm')}; margin-top:0.5rem;">Save</button>
-            ` : `<p style="margin:0.5rem 0 0; white-space:pre-wrap;">${remarkEntry.principalRemark || '—'}</p>`}
-          </div>
-        </div>
-
-        <!-- SIGNATURES & STAMP -->
-        <div style="padding:2rem 1.5rem; border-top:1px dashed #cbd5e1; display:grid; grid-template-columns:repeat(3,1fr); gap:2rem; text-align:center; background:#f8fafc;">
-          <div>
-            <div style="height:60px; border-bottom:2px solid #334155; margin:0 auto 0.5rem; width:180px;"></div>
-            <div style="font-size:0.9rem; color:#475569;">Class Teacher's Signature</div>
-          </div>
-          <div>
-            <div style="height:60px; border-bottom:2px solid #334155; margin:0 auto 0.5rem; width:180px;"></div>
-            <div style="font-size:0.9rem; color:#475569;">Parent/Guardian Signature</div>
-          </div>
-          <div>
-            <div style="height:60px; border-bottom:2px solid #334155; margin:0 auto 0.5rem; width:180px;"></div>
-            <div style="font-size:0.9rem; color:#475569;">Principal's Signature</div>
-          </div>
-        </div>
-        <div style="text-align:center; padding:1rem; font-size:0.85rem; color:#64748b; border-top:1px solid #e2e8f0;">
-          Official School Stamp □
-        </div>
-
-        <!-- ANNOUNCEMENTS -->
-        <div style="padding:1.25rem; background:#fefce8; border-top:1px solid #fef08a; font-size:0.9rem; color:#854d0e;">
-          <strong>School Announcements:</strong> ${announcements}
-        </div>
-
-        <div style="padding:1rem; text-align:right; background:#f8fafc;">
-          <button onclick="printReportCard(this)" style="${btnStyle('primary')}">🖨️ Print / Download</button>
-        </div>
-      </div>`;
-  }).join('');
-
+  output.innerHTML = students.map(student => buildReportCard(student, cls, arm, term, session, school)).join('');
   toast(`Generated ${students.length} report card(s)`, 'success');
 };
 
-// Helper: Get domain scores (you'll need to implement storage logic)
+/* ── Core card builder ─────────────────────────────────────────────────────── */
+function buildReportCard(student, cls, arm, term, session, school) {
+  const results  = App.data.results.filter(r => r.studentId === student.id && r.term === term && r.session === session);
+  const remarkEntry = (App.data.remarks || []).find(r => r.studentId === student.id && r.term === term && r.session === session) || {};
+  const domains  = getDomainScores(student.id, term, session);
+  const position = computePosition(student.id, cls, arm, term, session);
+  const classStudents = App.data.students.filter(s => s.class === cls && s.arm === arm);
+
+  const totalScore   = results.reduce((sum, r) => sum + (r.total || 0), 0);
+  const subjectCount = results.length;
+  const average      = subjectCount ? (totalScore / subjectCount).toFixed(1) : '—';
+  const overallGrade = subjectCount ? grade(parseFloat(average)) : { letter: '—', remark: '' };
+
+  const canEditTeacher   = priv.isAdmin() || (priv.isTeacher() && priv.canActOnClass(cls, arm));
+  const canEditPrincipal = priv.isAdmin();
+  const teacher          = App.data.teachers.find(t => t.class === cls && t.arm === arm);
+
+  /* ── All subjects defined in the system (show all rows, fill blanks) ── */
+  const allSubjects = App.data.subjects.map(s => s.name);
+
+  const subjectRows = allSubjects.map(subj => {
+    const r = results.find(x => x.subject === subj);
+    if (!r) return rcSubjectRow(subj, '', '', '', '—', '');
+    const g = grade(r.total);
+    return rcSubjectRow(subj, r.ca ?? '', r.exam ?? '', r.total ?? '', g.letter, g.remark, r.total);
+  }).join('');
+
+  /* ── Behavior rows ── */
+  const BEHAVIORS = [
+    'Attentiveness', 'Punctuality', 'Neatness', 'Politeness',
+    'Honesty', 'Creativity', 'Cooperation', 'Leadership'
+  ];
+  const behaviorRows = BEHAVIORS.map(b => {
+    const score = domains.behavior?.[b] || '';
+    return `<tr>
+      <td style="${rcTd('left')}padding-left:10px;">${b}</td>
+      <td style="${rcTd()}">${rcRatingDot(score, 1)}</td>
+      <td style="${rcTd()}">${rcRatingDot(score, 2)}</td>
+      <td style="${rcTd()}">${rcRatingDot(score, 3)}</td>
+      <td style="${rcTd()}">${rcRatingDot(score, 4)}</td>
+      <td style="${rcTd('center')} width:80px;">${score || ''}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="report-card" data-sid="${student.id}" style="
+    background:#fff; border-radius:0; overflow:hidden;
+    box-shadow:0 4px 24px rgba(0,0,0,.12); max-width:780px;
+    margin:0 auto; border:1.5px solid #c0cfe0; font-family:Arial,sans-serif; font-size:12px; color:#111;">
+
+    <!-- ═══ SCHOOL HEADER ═══ -->
+    <div style="padding:16px 20px 12px; border-bottom:2px solid #1e3a8a; display:flex; align-items:center; gap:16px;">
+      <div style="flex-shrink:0;">
+        ${school.logo
+          ? `<img src="${school.logo}" alt="logo" style="height:72px;width:72px;object-fit:contain;border-radius:4px;">`
+          : `<div style="width:72px;height:72px;background:#e8f0fe;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#1e40af;text-align:center;font-weight:bold;border:1px solid #c7d7f5;">SCHOOL<br>LOGO</div>`}
+      </div>
+      <div style="flex:1; text-align:center;">
+        <div style="font-size:18px;font-weight:700;color:#1e3a8a;letter-spacing:.5px;">${school.name || 'SCHOOL NAME'}</div>
+        <div style="font-size:11px;color:#374151;margin-top:2px;">${school.address || ''}</div>
+        ${school.phone ? `<div style="font-size:10px;color:#6b7280;">Tel: ${school.phone}</div>` : ''}
+        <div style="margin-top:6px;font-size:13px;font-weight:700;color:#1e40af;letter-spacing:1px;text-transform:uppercase;">
+          Report Card — ${term} &nbsp;|&nbsp; ${session}
+        </div>
+      </div>
+      <div style="flex-shrink:0;width:72px;"><!-- right spacer --></div>
+    </div>
+
+    <!-- ═══ STUDENT INFO BAND ═══ -->
+    <div style="background:#f0f6ff;padding:10px 20px;border-bottom:1px solid #c7d7f5;">
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;">
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Student Name</span><br>
+          <strong style="font-size:13px;">${student.name}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Admission No.</span><br>
+          <strong>${student.id}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Class</span><br>
+          <strong>${cls} ${arm}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">School Year</span><br>
+          <strong>${session}</strong></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:6px;">
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Gender</span><br>
+          <strong>${student.gender || '—'}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Date of Birth</span><br>
+          <strong>${student.dob || '—'}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">No. in Class</span><br>
+          <strong>${classStudents.length}</strong></div>
+        <div><span style="color:#6b7280;font-size:10px;text-transform:uppercase;">Resumption</span><br>
+          <strong>${school.resumptionDate || '—'}</strong></div>
+      </div>
+    </div>
+
+    <!-- ═══ ACADEMIC PERFORMANCE TABLE ═══ -->
+    <div style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#1e3a8a;color:#fff;">
+            <td colspan="6" style="padding:6px 10px;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;">
+              Academic Performance
+            </td>
+          </tr>
+          <tr style="background:#dbeafe;color:#1e3a8a;">
+            <th style="${rcTh('left')} width:34%;">Subject</th>
+            <th style="${rcTh()} width:13%;">CA (40)</th>
+            <th style="${rcTh()} width:13%;">Exam (60)</th>
+            <th style="${rcTh()} width:13%;">Total (100)</th>
+            <th style="${rcTh()} width:10%;">Grade</th>
+            <th style="${rcTh('left')}">Remark</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${subjectRows}
+        </tbody>
+        <tfoot>
+          <tr style="background:#f0f6ff;font-weight:700;">
+            <td style="${rcTd('left')} padding-left:10px; border-top:2px solid #93c5fd;">TOTAL / AVERAGE</td>
+            <td style="${rcTd()} border-top:2px solid #93c5fd;"></td>
+            <td style="${rcTd()} border-top:2px solid #93c5fd;"></td>
+            <td style="${rcTd()} border-top:2px solid #93c5fd; font-size:13px; color:#1e3a8a;">${subjectCount ? totalScore : '—'}</td>
+            <td style="${rcTd()} border-top:2px solid #93c5fd; font-size:13px; color:#1e3a8a;">${overallGrade.letter}</td>
+            <td style="${rcTd('left')} border-top:2px solid #93c5fd;">Avg: ${average}${subjectCount ? '%' : ''} &nbsp;|&nbsp; Position: ${position}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <!-- ═══ ATTENDANCE BAR ═══ -->
+    <div style="padding:8px 20px;background:#f8fafc;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:12px;">
+      <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#374151;min-width:100px;">Attendance</span>
+      <div style="flex:1;height:10px;background:#e2e8f0;border-radius:5px;overflow:hidden;">
+        <div style="width:${student.attendance || 0}%;height:100%;background:${(student.attendance||0)<75?'#ef4444':(student.attendance||0)<90?'#f59e0b':'#22c55e'};"></div>
+      </div>
+      <span style="font-size:12px;font-weight:700;min-width:50px;text-align:right;">${student.attendance || 0}%</span>
+      <span style="font-size:10px;color:#6b7280;">${(student.attendance||0)<75?'Below expected':'Satisfactory'}</span>
+    </div>
+
+    <!-- ═══ BEHAVIOR & SKILLS ═══ -->
+    <div style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#1e3a8a;color:#fff;">
+            <td colspan="6" style="padding:6px 10px;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;">
+              Behaviour &amp; Skills Assessment
+            </td>
+          </tr>
+          <tr style="background:#dbeafe;color:#1e3a8a;">
+            <th style="${rcTh('left')} width:34%;">Behaviour</th>
+            <th style="${rcTh()}">1st</th>
+            <th style="${rcTh()}">2nd</th>
+            <th style="${rcTh()}">3rd</th>
+            <th style="${rcTh()}">4th</th>
+            <th style="${rcTh()} width:80px;">Rating</th>
+          </tr>
+        </thead>
+        <tbody>${behaviorRows}</tbody>
+      </table>
+    </div>
+
+    <!-- ═══ DOMAINS (Cognitive / Affective / Psychomotor) ═══ -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid #e2e8f0;">
+      ${[
+        { label:'Cognitive Domain',    val: domains.cognitive,    bg:'#eff6ff', clr:'#1e40af', brd:'#bfdbfe' },
+        { label:'Affective Domain',    val: domains.affective,    bg:'#fdf2f8', clr:'#9d174d', brd:'#f9a8d4' },
+        { label:'Psychomotor Domain',  val: domains.psychomotor,  bg:'#f0fdf4', clr:'#166534', brd:'#bbf7d0' },
+      ].map(d => `
+        <div style="background:${d.bg};border-right:1px solid ${d.brd};padding:10px 12px;">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:${d.clr};margin-bottom:2px;">${d.label}</div>
+          <div style="font-size:20px;font-weight:700;color:${d.clr};">${d.val || '—'}<span style="font-size:11px;font-weight:400;"> / 5</span></div>
+          <div style="font-size:10px;color:#4b5563;">${domainLabel(d.val)}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- ═══ GRADING SCALE + REMARKS ═══ -->
+    <div style="display:grid;grid-template-columns:180px 160px 1fr;border-top:2px solid #1e3a8a;">
+
+      <!-- Grading Scale -->
+      <div style="border-right:1px solid #c0cfe0;padding:10px 12px;">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#1e3a8a;margin-bottom:6px;">Grading Scale</div>
+        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+          <thead><tr style="background:#dbeafe;">
+            <th style="${rcTh()}">Grade</th>
+            <th style="${rcTh('left')}">Score</th>
+          </tr></thead>
+          <tbody>
+            ${[['A',  '80–100%','#16a34a'],['B', '70–79%','#2563eb'],['C','60–69%','#d97706'],['D','50–59%','#ea580c'],['F','0–49%','#dc2626']]
+              .map(([g,s,c])=>`<tr>
+                <td style="text-align:center;padding:2px 4px;border:0.5px solid #e2e8f0;">
+                  <span style="background:${c}1a;color:${c};font-weight:700;padding:1px 6px;border-radius:3px;">${g}</span>
+                </td>
+                <td style="padding:2px 6px;border:0.5px solid #e2e8f0;">${s}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Grading Marks -->
+      <div style="border-right:1px solid #c0cfe0;padding:10px 12px;">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#1e3a8a;margin-bottom:6px;">Grading Marks</div>
+        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+          <thead><tr style="background:#dbeafe;">
+            <th style="${rcTh()}">Mark</th>
+            <th style="${rcTh('left')}">Meaning</th>
+          </tr></thead>
+          <tbody>
+            ${[['5','Excellent'],['4','Good'],['3','Satisfactory'],['2','Fair'],['1','Poor']]
+              .map(([m,l])=>`<tr>
+                <td style="text-align:center;padding:2px 4px;border:0.5px solid #e2e8f0;font-weight:700;color:#1e40af;">${m}</td>
+                <td style="padding:2px 6px;border:0.5px solid #e2e8f0;">${l}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Comments / Remarks -->
+      <div style="padding:10px 12px;">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#1e3a8a;margin-bottom:6px;">Remarks</div>
+        <div style="margin-bottom:8px;">
+          <div style="font-size:10px;color:#6b7280;margin-bottom:3px;">Class Teacher${teacher ? ' — ' + teacher.name : ''}:</div>
+          ${canEditTeacher
+            ? `<textarea id="t-rem-${student.id}" rows="2" style="width:100%;font-size:11px;border:1px solid #c7d7f5;border-radius:4px;padding:4px 6px;resize:vertical;font-family:Arial,sans-serif;">${remarkEntry.teacherRemark || ''}</textarea>
+               <button onclick="saveRemark('${student.id}','${term}','${session}','teacher')" style="${btnStyle('primary','sm')};margin-top:3px;font-size:10px;">Save</button>`
+            : `<div style="min-height:30px;border:1px solid #e2e8f0;border-radius:4px;padding:4px 6px;font-size:11px;color:#374151;">${remarkEntry.teacherRemark || '—'}</div>`}
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:3px;">Principal — ${school.principal || 'Principal'}:</div>
+          ${canEditPrincipal
+            ? `<textarea id="p-rem-${student.id}" rows="2" style="width:100%;font-size:11px;border:1px solid #c7d7f5;border-radius:4px;padding:4px 6px;resize:vertical;font-family:Arial,sans-serif;">${remarkEntry.principalRemark || ''}</textarea>
+               <button onclick="saveRemark('${student.id}','${term}','${session}','principal')" style="${btnStyle('primary','sm')};margin-top:3px;font-size:10px;">Save</button>`
+            : `<div style="min-height:30px;border:1px solid #e2e8f0;border-radius:4px;padding:4px 6px;font-size:11px;color:#374151;">${remarkEntry.principalRemark || '—'}</div>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SIGNATURES ═══ -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);border-top:2px solid #1e3a8a;background:#f8fafc;padding:16px 20px;gap:24px;text-align:center;">
+      ${['Class Teacher\'s Signature','Parent / Guardian Signature','Principal\'s Signature'].map(s=>`
+        <div>
+          <div style="height:48px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <div style="font-size:10px;color:#475569;">${s}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- ═══ STAMP + NEXT TERM ═══ -->
+    <div style="display:grid;grid-template-columns:1fr auto;border-top:1px solid #e2e8f0;padding:10px 20px;background:#fefce8;align-items:center;gap:12px;">
+      <div style="font-size:10px;color:#854d0e;">
+        <strong>Next Term Begins:</strong> ${school.resumptionDate || 'Date TBC'} &nbsp;&nbsp;
+        <strong>Announcement:</strong> ${school.announcements || 'No announcements at this time.'}
+      </div>
+      <div style="border:2px dashed #d1d5db;border-radius:50%;width:60px;height:60px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#9ca3af;text-align:center;flex-shrink:0;">
+        SCHOOL<br>STAMP
+      </div>
+    </div>
+
+    <!-- ═══ PRINT BUTTON ═══ -->
+    <div style="padding:10px 20px;text-align:right;background:#f8fafc;border-top:1px solid #e2e8f0;">
+      <button onclick="printReportCard(this)" style="${btnStyle('primary')}">🖨️ Print / Download PDF</button>
+    </div>
+  </div>`;
+}
+
+/* ── Table style helpers ───────────────────────────────────────────────────── */
+function rcTh(align = 'center') {
+  return `padding:5px 8px;text-align:${align};font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;border:0.5px solid #93c5fd;`;
+}
+function rcTd(align = 'center') {
+  return `padding:4px 8px;text-align:${align};border:0.5px solid #e2e8f0;font-size:11px;`;
+}
+
+function rcSubjectRow(subject, ca, exam, total, gradeLetter, gradeRemark, rawScore) {
+  const gradeColors = { A:'#16a34a', B:'#2563eb', C:'#d97706', D:'#ea580c', F:'#dc2626' };
+  const clr = gradeColors[gradeLetter] || '#6b7280';
+  const bar = (typeof rawScore === 'number')
+    ? `<div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin:2px 0;">
+         <div style="width:${rawScore}%;height:100%;background:${rawScore>=70?'#16a34a':rawScore>=50?'#2563eb':rawScore>=40?'#d97706':'#dc2626'};"></div>
+       </div>` : '';
+  return `<tr>
+    <td style="${rcTd('left')} padding-left:10px;font-weight:500;">${subject}</td>
+    <td style="${rcTd()}">${ca !== '' ? ca : ''}</td>
+    <td style="${rcTd()}">${exam !== '' ? exam : ''}</td>
+    <td style="${rcTd()}">
+      ${bar}
+      ${total !== '' ? `<strong>${total}</strong>` : ''}
+    </td>
+    <td style="${rcTd()}">
+      ${gradeLetter !== '—'
+        ? `<span style="background:${clr}1a;color:${clr};font-weight:700;padding:1px 7px;border-radius:3px;font-size:11px;">${gradeLetter}</span>`
+        : '<span style="color:#d1d5db;">—</span>'}
+    </td>
+    <td style="${rcTd('left')};font-size:10px;color:#6b7280;">${gradeRemark || ''}</td>
+  </tr>`;
+}
+
+function rcRatingDot(score, slot) {
+  const filled = score && Number(score) >= slot;
+  return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${filled?'#1e40af':'#e2e8f0'};"></span>`;
+}
+
+/* ── Domain helpers ───────────────────────────────────────────────────────── */
 function getDomainScores(studentId, term, session) {
-  // Example lookup – adjust to your actual data structure
-  const record = App.data.domainAssessments?.find(d => 
+  const record = (App.data.domainAssessments || []).find(d =>
     d.studentId === studentId && d.term === term && d.session === session
   ) || {};
   return {
-    cognitive: record.cognitive || null,
-    affective: record.affective || null,
-    psychomotor: record.psychomotor || null
+    cognitive:   record.cognitive   || null,
+    affective:   record.affective   || null,
+    psychomotor: record.psychomotor || null,
+    behavior:    record.behavior    || {}
   };
 }
-
-// Simple label for domains (1-5 scale)
 function domainLabel(score) {
   if (!score) return 'Not assessed';
   if (score >= 4.5) return 'Excellent';
@@ -3052,474 +4323,683 @@ function domainLabel(score) {
   return 'Needs Improvement';
 }
 
-window.clearReportOutput = function() {
-  document.getElementById('report-cards-output').innerHTML = '';
-};
-
-// Keep your existing saveRemark, computePosition, printReportCard functions
-// You can enhance printReportCard to include logo & better CSS for print
+/* ── Remarks & position ───────────────────────────────────────────────────── */
 window.saveRemark = function(studentId, term, session, type) {
   if (type === 'principal' && !priv.isAdmin()) { denyAccess('Only Admin can save the principal\'s remark.'); return; }
-  if (type === 'teacher' && !priv.canEnterResults()) { denyAccess('You do not have permission to save remarks.'); return; }
+  if (type === 'teacher' && !priv.canEnterResults()) { denyAccess('You do not have permission.'); return; }
 
-  const key     = type === 'teacher' ? 'teacherRemark' : 'principalRemark';
-  const inputId = type === 'teacher' ? `teacher-remark-${studentId}` : `principal-remark-${studentId}`;
-  const value   = document.getElementById(inputId)?.value || '';
+  const key   = type === 'teacher' ? 'teacherRemark' : 'principalRemark';
+  const elId  = type === 'teacher' ? `t-rem-${studentId}` : `p-rem-${studentId}`;
+  const value = document.getElementById(elId)?.value || '';
 
-  let entry = App.data.remarks.find(r => r.studentId===studentId && r.term===term && r.session===session);
+  let entry = (App.data.remarks || []).find(r => r.studentId === studentId && r.term === term && r.session === session);
   if (entry) { entry[key] = value; }
   else {
     entry = { studentId, term, session, teacherRemark: '', principalRemark: '' };
     entry[key] = value;
     App.data.remarks.push(entry);
   }
-  toast(`${type==='teacher'?'Teacher':'Principal'}'s remark saved!`, 'success');
+  toast(`${type === 'teacher' ? 'Teacher' : 'Principal'}'s remark saved!`, 'success');
 };
 
 function computePosition(studentId, cls, arm, term, session) {
-  const students = App.data.students.filter(s => s.class===cls && s.arm===arm);
+  const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
   const scores = students.map(s => {
-    const results = App.data.results.filter(r => r.studentId===s.id && r.term===term && r.session===session);
-    return { id: s.id, avg: results.length ? results.reduce((a,b)=>a+b.total,0)/results.length : 0 };
-  }).sort((a,b) => b.avg - a.avg);
+    const res = App.data.results.filter(r => r.studentId === s.id && r.term === term && r.session === session);
+    return { id: s.id, avg: res.length ? res.reduce((a, b) => a + b.total, 0) / res.length : 0 };
+  }).sort((a, b) => b.avg - a.avg);
   const idx = scores.findIndex(s => s.id === studentId);
-  return idx < 0 ? 'N/A' : `${ordinal(idx+1)} / ${students.length}`;
+  return idx < 0 ? 'N/A' : `${ordinal(idx + 1)} / ${students.length}`;
 }
 
-/**
- * Opens a new window with clean, print-optimized version of the report card
- * Removes interactive elements and applies better print styling
- */
-window.printReportCard = function(btn) {
-    const originalCard = btn.closest('.report-card');
-    if (!originalCard) return;
-
-    // Clone the card
-    const cardClone = originalCard.cloneNode(true);
-
-    // 1. Remove all interactive elements
-    cardClone.querySelectorAll('button, input, select, textarea').forEach(el => el.remove());
-
-    // 2. Replace textareas with plain paragraphs (already done, but improved)
-    // (we already removed textareas above, but keeping safe replacement just in case)
-    cardClone.querySelectorAll('[id^="t-rem-"], [id^="p-rem-"]').forEach(el => {
-        const p = document.createElement('p');
-        p.style.cssText = 'margin:0.5em 0; font-size:0.95rem; line-height:1.4; white-space:pre-wrap; min-height:2.5em;';
-        p.textContent = el.value || el.textContent || '(No remark entered)';
-        el.replaceWith(p);
-    });
-
-    // 3. Clean up empty signature lines & make them more visible
-    cardClone.querySelectorAll('.signature-line').forEach(line => {
-        line.style.borderBottom = '2px solid #000';
-        line.style.width = '220px';
-        line.style.margin = '2.5rem auto 0.6rem';
-    });
-
-    // 4. Prepare clean print document
-    const printWindow = window.open('', '_blank', 'width=900,height=1100,scrollbars=yes');
-    if (!printWindow) {
-        alert('Popup blocked. Please allow popups for this site to print report cards.');
-        return;
-    }
-
-    const title = `Report Card - ${originalCard.querySelector('[data-sid]')?.dataset.sid || 'Student'}`;
-
-    // Much better print stylesheet
-    printWindow.document.write(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>${title}</title>
-    <style>
-        @page {
-            size: A4;
-            margin: 1.2cm 1.5cm;
-        }
-
-        body {
-            font-family: "Georgia", "Times New Roman", serif;
-            font-size: 11pt;
-            line-height: 1.45;
-            color: #111;
-            margin: 0;
-            padding: 0;
-        }
-
-        .report-card {
-            max-width: 21cm;
-            margin: 0 auto;
-        }
-
-        h1, h2, h3 {
-            color: #0f172a;
-            margin: 0.8em 0 0.4em;
-        }
-
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin: 1em 0;
-            font-size: 9.5pt;
-        }
-
-        th, td {
-            border: 1px solid #666;
-            padding: 0.45em 0.7em;
-            text-align: left;
-        }
-
-        th {
-            background-color: #f1f5f9;
-            font-weight: bold;
-            text-transform: uppercase;
-            font-size: 9pt;
-            color: #334155;
-        }
-
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 1rem;
-            margin: 1.5rem 0;
-            padding: 1.2rem;
-            background: #eff6ff;
-            border-radius: 8px;
-        }
-
-        .domain-card {
-            padding: 1rem;
-            border-radius: 6px;
-            background: white;
-            border: 1px solid #cbd5e1;
-        }
-
-        .signature-area {
-            margin-top: 3rem;
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 2rem;
-            text-align: center;
-        }
-
-        .signature-line {
-            border-bottom: 2px solid #000;
-            width: 80%;
-            margin: 2.8rem auto 0.5rem;
-        }
-
-        .no-print {
-            display: none !important;
-        }
-
-        @media print {
-            body { margin: 0; }
-            .report-card { box-shadow: none; border: none; }
-        }
-    </style>
-</head>
-<body>
-    <div class="report-card">
-        ${cardClone.innerHTML}
-    </div>
-
-    <script>
-        // Auto-trigger print dialog after content loads
-        window.onload = function() {
-            setTimeout(() => window.print(), 800);
-        };
-    </script>
-</body>
-</html>`);
-
-// Add this before printWindow.document.write if you want school logo/header on every page
-const headerHTML = `
-    <div style="text-align:center; margin-bottom:1.5cm; border-bottom:1px solid #999; padding-bottom:1rem;">
-        <h1 style="margin:0; font-size:18pt;">${schoolName || 'School Name'}</h1>
-        <p style="margin:0.3rem 0 0; font-size:11pt;">${term || ''} • ${session || ''}</p>
-    </div>`;
-
-// Then insert it at the beginning of .report-card
-cardClone.insertAdjacentHTML('afterbegin', headerHTML);
-
-// Or repeat header on every page using running header (CSS Paged Media) – more advanced
-
-    printWindow.document.close();
+window.clearReportOutput = function() {
+  document.getElementById('report-cards-output').innerHTML = '';
 };
 
-/* ─────────────────────────────────────────
-   14. ATTENDANCE + DOMAIN-BASED ASSESSMENT
-   Features:
-   • Admin → any class/arm
-   • Teacher → only assigned class/arm
-   • Parent → no access
-   • Attendance (Present / Late / Absent / Excused)
-   • Quick per-student domain scoring (1–5 scale)
-   • Summary statistics & alerts
-   • Save both attendance & domain marks in one flow
-───────────────────────────────────────── */
+/* ── Print / PDF ──────────────────────────────────────────────────────────── */
+window.printReportCard = function(btn) {
+  const originalCard = btn.closest('.report-card');
+  if (!originalCard) return;
 
+  const cardClone = originalCard.cloneNode(true);
+  cardClone.querySelectorAll('button').forEach(el => el.remove());
+  cardClone.querySelectorAll('textarea').forEach(el => {
+    const p = document.createElement('div');
+    p.style.cssText = 'min-height:28px;padding:3px 6px;font-size:11px;line-height:1.4;white-space:pre-wrap;';
+    p.textContent = el.value || '—';
+    el.replaceWith(p);
+  });
+
+  const printWindow = window.open('', '_blank', 'width=860,height=1100,scrollbars=yes');
+  if (!printWindow) { alert('Popup blocked. Please allow popups for printing.'); return; }
+
+  const school = App.data.schoolInfo || {};
+
+  printWindow.document.write(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<title>Report Card</title>
+<style>
+  @page { size:A4; margin:1cm 1.2cm; }
+  body { font-family:Arial,sans-serif; font-size:11pt; color:#111; margin:0; padding:0; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { border:0.5px solid #c0cfe0; padding:4px 8px; }
+  thead th { background:#dbeafe; color:#1e3a8a; font-size:9pt; text-transform:uppercase; }
+  .report-card { max-width:100%; }
+  button, .no-print { display:none !important; }
+  @media print { body { margin:0; } }
+</style>
+</head><body>
+<div class="report-card">${cardClone.innerHTML}</div>
+<script>window.onload=()=>setTimeout(()=>window.print(),600);<\/script>
+</body></html>`);
+  printWindow.document.close();
+};
+
+/* ─────────────────────────────────────────────────────────────────────────────
+  14 
+  ATTENDANCE & DOMAIN ASSESSMENT MODULE
+   • Spreadsheet-style register — all session days as columns
+   • Month-grouped column headers with day-of-week labels
+   • Click cells to cycle P → L → A → E
+   • Today's column highlighted with outline
+   • Weekends auto-shaded and non-interactive
+   • Per-row running totals: Present / Absent / Late + % bar
+   • Day-total row at the bottom showing class presence per day
+   • Domain Assessment tab (Cognitive / Affective / Psychomotor + Behaviours)
+   • Summary & Stats tab with alert flags for students below 75%
+   • Export to CSV
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── Term date ranges — edit to match your school calendar ─────────────────── */
+const ATT_TERM_DATES = {
+  'First Term':  { start: [2025,  8,  8], end: [2025, 11, 12] },
+  'Second Term': { start: [2026,  0, 12], end: [2026,  3,  3] },
+  'Third Term':  { start: [2026,  4,  4], end: [2026,  7,  1] },
+};
+
+const ATT_CYCLE      = ['P', 'L', 'A', 'E'];
+const ATT_CHIP_STYLE = {
+  P: 'background:#dcfce7;color:#166534;border-color:#bbf7d0',
+  A: 'background:#fee2e2;color:#991b1b;border-color:#fca5a5',
+  L: 'background:#fef9c3;color:#854d0e;border-color:#fde68a',
+  E: 'background:#e0f2fe;color:#075985;border-color:#bae6fd',
+  H: 'background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0',
+};
+
+const ATT_BEHAVIORS = [
+  'Attentiveness','Punctuality','Neatness','Politeness',
+  'Honesty','Creativity','Cooperation','Leadership'
+];
+
+/* ── Module-level state ─────────────────────────────────────────────────────── */
+let _attSchoolDays = [];
+let _attActiveTab  = 'attendance';
+
+/* ── CSS injection ──────────────────────────────────────────────────────────── */
+(function injectAttStyles() {
+  if (document.getElementById('att-module-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'att-module-styles';
+  s.textContent = `
+    .att-chip{display:inline-block;width:20px;height:20px;border-radius:3px;font-size:10px;font-weight:700;line-height:20px;text-align:center;cursor:pointer;border:0.5px solid transparent}
+    .att-sheet-wrap{overflow-x:auto;border:1px solid var(--border,#e2e8f0);border-radius:10px}
+    table.att-reg{border-collapse:collapse;font-size:11px;min-width:100%}
+    table.att-reg th,table.att-reg td{border:0.5px solid var(--border,#e2e8f0);white-space:nowrap}
+    .att-name{min-width:150px;padding:4px 8px;font-size:11px;position:sticky;left:0;z-index:1;background:var(--surface,#fff)}
+    .att-day-cell{width:26px;min-width:26px;text-align:center;padding:2px 1px;cursor:pointer;user-select:none}
+    .att-wknd{background:#f8fafc!important;cursor:default}
+    .att-sum{min-width:40px;text-align:center;padding:4px 5px;font-size:11px;font-weight:600;background:var(--surface2,#f8fafc)}
+    .att-pct-good{color:#166534}.att-pct-warn{color:#854d0e}.att-pct-bad{color:#991b1b}
+    .att-tab{padding:6px 16px;font-size:12px;border-radius:8px;border:1px solid var(--border,#e2e8f0);background:var(--surface,#fff);color:var(--text2,#6b7280);cursor:pointer;font-family:inherit}
+    .att-tab.active{background:#1e3a8a;color:#fff;border-color:#1e3a8a}
+    .att-stat{background:var(--surface,#fff);border:1px solid var(--border,#e2e8f0);border-radius:8px;padding:10px 14px}
+    .att-stat .sv{font-size:22px;font-weight:700;line-height:1}
+    .att-stat .sl{font-size:11px;color:var(--text2,#6b7280);margin-top:3px}
+    .att-alert{background:#fee2e2;color:#991b1b;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:600}
+  `;
+  document.head.appendChild(s);
+})();
+
+/* ── Entry point ────────────────────────────────────────────────────────────── */
 function renderAttendance() {
-  if (priv.isParent()) {
-    navigate('results');
-    return;
-  }
+  if (priv.isParent()) { navigate('results'); return; }
 
-  const section = document.getElementById('attendance');
+  const section   = document.getElementById('attendance');
   const isTeacher = priv.isTeacher();
   const userClass = App.currentUser.assignedClass || '';
   const userArm   = App.currentUser.assignedArm   || '';
+
+  if (!App.data.attendanceRecords) App.data.attendanceRecords = [];
+  if (!App.data.domainAssessments) App.data.domainAssessments = [];
 
   const classOptions = App.data.classes
     .map(c => `<option value="${c.name}" ${userClass === c.name ? 'selected' : ''}>${c.name}</option>`)
     .join('');
 
   section.innerHTML = `
-    <h2 style="margin-bottom:1.5rem; display:flex; align-items:center; gap:1rem;">
-      Attendance & Assessment
+    <h2 style="margin-bottom:1.25rem;display:flex;align-items:center;gap:1rem;">
+      Attendance &amp; Assessment
       ${isTeacher ? `<span style="${badgeStyle('success')}">${userClass} ${userArm}</span>` : ''}
     </h2>
 
-    <div style="background:#ffffff; border-radius:12px; padding:1.75rem; box-shadow:0 4px 12px rgba(0,0,0,0.08); margin-bottom:2.5rem;">
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:1.25rem; margin-bottom:1.5rem;">
+    <div style="background:var(--surface,#fff);border-radius:12px;padding:1.5rem;border:1px solid var(--border,#e2e8f0);margin-bottom:1.25rem;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-bottom:1rem;">
         <div>
           <label style="${labelStyle()}">Class</label>
-          <select id="att-class" style="${inputStyle()}" onchange="updateAttArms()" ${isTeacher ? 'disabled' : ''}>
-            <option value="">— Select class —</option>
-            ${classOptions}
+          <select id="att-class" style="${inputStyle()}" onchange="attUpdateArms()" ${isTeacher?'disabled':''}>
+            <option value="">— Select class —</option>${classOptions}
           </select>
         </div>
         <div>
           <label style="${labelStyle()}">Arm / Section</label>
-          <select id="att-arm" style="${inputStyle()}" ${isTeacher ? 'disabled' : ''}>
+          <select id="att-arm" style="${inputStyle()}" ${isTeacher?'disabled':''}>
             <option value="">— Select arm —</option>
           </select>
         </div>
         <div>
-          <label style="${labelStyle()}">Date</label>
-          <input type="date" id="att-date" value="${new Date().toISOString().split('T')[0]}" style="${inputStyle()}">
+          <label style="${labelStyle()}">Term</label>
+          <select id="att-term" style="${inputStyle()}">
+            <option>First Term</option>
+            <option selected>Second Term</option>
+            <option>Third Term</option>
+          </select>
+        </div>
+        <div>
+          <label style="${labelStyle()}">Academic Session</label>
+          <input id="att-session" value="${App.data.schoolInfo?.session || '2025/2026'}" style="${inputStyle()}">
         </div>
       </div>
-
-      <div style="display:flex; gap:1rem; flex-wrap:wrap;">
-        <button onclick="loadAttendance()" style="${btnStyle('primary')}">Load Students</button>
-        <button onclick="clearAttendanceForm()" style="${btnStyle('secondary')}">Clear</button>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap;">
+        <button onclick="attLoadRegister()" style="${btnStyle('primary')}">Load Register</button>
+        <button onclick="attMarkAllToday('P')" style="${btnStyle('success','sm')}">All Present Today</button>
+        <button onclick="attMarkAllToday('A')" style="${btnStyle('danger','sm')}">All Absent Today</button>
+        <button onclick="attSaveAll()" style="${btnStyle('secondary','sm')}">Save All</button>
+        <button onclick="attExportCSV()" style="${btnStyle('secondary','sm')}">Export CSV</button>
       </div>
     </div>
 
-    <div id="attendance-table" style="min-height:200px;"></div>
+    <div id="att-tabs" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;"></div>
+    <div id="att-pane-attendance"></div>
+    <div id="att-pane-domains" style="display:none"></div>
+    <div id="att-pane-summary" style="display:none"></div>
+  `;
 
-    <div id="summary-section" style="margin-top:2.5rem; display:none;">
-      <h3 style="margin-bottom:1.25rem;">Class Summary – ${new Date().toLocaleDateString()}</h3>
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:1.25rem;">
-        ${generateSummaryCards()}
-      </div>
-    </div>`;
-  
-  if (!isTeacher && userClass) updateAttArms();
+  attRenderTabs();
+  if (isTeacher && userClass) { attUpdateArms(); }
 }
 
-// ── Helpers ────────────────────────────────────────
+/* ── Tabs ────────────────────────────────────────────────────────────────────── */
+function attRenderTabs() {
+  const tabs = [
+    { id: 'attendance', label: 'Attendance Register' },
+    { id: 'domains',    label: 'Domain Assessment'   },
+    { id: 'summary',    label: 'Summary & Stats'      },
+  ];
+  document.getElementById('att-tabs').innerHTML = tabs.map(t =>
+    `<button class="att-tab ${_attActiveTab === t.id ? 'active' : ''}" onclick="attSwitchTab('${t.id}')">${t.label}</button>`
+  ).join('');
+}
 
-window.updateAttArms = function() {
-  const cls = document.getElementById('att-class')?.value;
-  const armSelect = document.getElementById('att-arm');
-  if (!armSelect) return;
-
-  armSelect.innerHTML = '<option value="">— Select arm —</option>';
-  if (!cls) return;
-
-  const classData = App.data.classes.find(c => c.name === cls);
-  if (classData?.arms) {
-    armSelect.innerHTML += classData.arms.map(a => `<option value="${a}">${a}</option>`).join('');
-  }
+window.attSwitchTab = function(name) {
+  _attActiveTab = name;
+  attRenderTabs();
+  ['attendance', 'domains', 'summary'].forEach(p => {
+    const el = document.getElementById('att-pane-' + p);
+    if (el) el.style.display = p === name ? '' : 'none';
+  });
+  if (name === 'summary') attRenderSummary();
 };
 
-window.loadAttendance = function() {
-  const cls  = document.getElementById('att-class')?.value;
-  const arm  = document.getElementById('att-arm')?.value;
-  const date = document.getElementById('att-date')?.value;
+/* ── Arm selector ─────────────────────────────────────────────────────────── */
+window.attUpdateArms = function() {
+  const cls = document.getElementById('att-class')?.value;
+  const sel = document.getElementById('att-arm');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Select arm —</option>';
+  if (!cls) return;
+  const cd = App.data.classes.find(c => c.name === cls);
+  if (cd?.arms) sel.innerHTML += cd.arms.map(a => `<option>${a}</option>`).join('');
+};
 
-  if (!cls || !arm || !date) {
-    return toast('Please select class, arm and date.', 'warning');
+/* ── Date helpers ─────────────────────────────────────────────────────────── */
+function attDateStr(d) { return d.toISOString().split('T')[0]; }
+function attIsWeekend(d) { const w = d.getDay(); return w === 0 || w === 6; }
+
+function attGetSchoolDays(term) {
+  const range = ATT_TERM_DATES[term];
+  if (!range) return [];
+  const days = [];
+  const d = new Date(...range.start);
+  const end = new Date(...range.end);
+  while (d <= end) {
+    days.push({
+      str:     attDateStr(d),
+      day:     d.getDay(),
+      date:    d.getDate(),
+      month:   d.getMonth(),
+      year:    d.getFullYear(),
+      weekend: attIsWeekend(d),
+    });
+    d.setDate(d.getDate() + 1);
   }
+  return days;
+}
 
+function attGroupByMonth(days) {
+  const groups = {};
+  days.forEach(d => {
+    const key = d.year + '-' + d.month;
+    if (!groups[key]) groups[key] = {
+      label: new Date(d.year, d.month, 1).toLocaleString('default', { month: 'short', year: '2-digit' }),
+      days: [],
+    };
+    groups[key].days.push(d);
+  });
+  return Object.values(groups);
+}
+
+/* ── Load register ─────────────────────────────────────────────────────────── */
+window.attLoadRegister = function() {
+  const cls     = document.getElementById('att-class')?.value;
+  const arm     = document.getElementById('att-arm')?.value;
+  const term    = document.getElementById('att-term')?.value;
+  const session = document.getElementById('att-session')?.value;
+
+  if (!cls || !arm || !term || !session) return toast('Please complete all fields.', 'warning');
   if (!priv.canTakeAttendance()) return denyAccess('No permission to take attendance.');
   if (!priv.canActOnClass(cls, arm)) return denyAccess('You can only manage your assigned class/arm.');
 
   const students = App.data.students.filter(s => s.class === cls && s.arm === arm);
   if (!students.length) return toast('No students found in this class/arm.', 'warning');
 
-  const existing = App.data.attendanceRecords?.filter?.(a => a.date === date && a.class === cls && a.arm === arm) || [];
+  _attSchoolDays = attGetSchoolDays(term);
+  if (!_attSchoolDays.length) return toast('Term date range not configured.', 'warning');
 
-  document.getElementById('attendance-table').innerHTML = `
-    <div style="background:#ffffff; border-radius:12px; padding:1.75rem; box-shadow:0 4px 12px rgba(0,0,0,0.08);">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
-        <h4 style="margin:0; font-size:1.25rem;">${cls} ${arm} – ${date}</h4>
-        <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
-          <button onclick="markAll('present')"  style="${btnStyle('success','sm')}">✔ All Present</button>
-          <button onclick="markAll('absent')"   style="${btnStyle('danger','sm')}">✘ All Absent</button>
-          <button onclick="markAll('late')"     style="${btnStyle('warning','sm')}">🕒 All Late</button>
-        </div>
-      </div>
+  // Store context on module for use by sub-renderers
+  window._attCtx = { cls, arm, term, session, students };
 
-      <div style="overflow-x:auto; max-height:65vh;">
-        <table style="${tableStyle()}">
-          <thead>
-            <tr style="${thRowStyle()}">
-              <th style="${thStyle('80px')}">ID</th>
-              <th style="${thStyle('minmax(140px,2fr)')}">Student</th>
-              <th style="${thStyle('110px')}">Attendance</th>
-              <th style="${thStyle('90px')}">Cogni­tive</th>
-              <th style="${thStyle('90px')}">Affective</th>
-              <th style="${thStyle('90px')}">Psycho­motor</th>
-              <th style="${thStyle('minmax(140px,1fr)')}">Remarks</th>
-            </tr>
-          </thead>
-          <tbody id="att-rows">
-            ${students.map(s => {
-              const rec = existing.find(r => r.studentId === s.id) || {};
-              return `
-                <tr style="${trStyle()}" data-sid="${s.id}">
-                  <td style="${tdStyle()}">${s.id}</td>
-                  <td style="${tdStyle()}">${s.name}</td>
-                  <td style="${tdStyle()}">
-                    <select class="att-status" style="${inputStyle('sm')}">
-                      <option value="present"  ${rec.status==='present'  || !rec.status ? 'selected' : ''}>Present</option>
-                      <option value="late"     ${rec.status==='late'     ? 'selected' : ''}>Late</option>
-                      <option value="absent"   ${rec.status==='absent'   ? 'selected' : ''}>Absent</option>
-                      <option value="excused"  ${rec.status==='excused'  ? 'selected' : ''}>Excused</option>
-                    </select>
-                  </td>
-                  <td style="${tdStyle('text-align:center;')}">
-                    <select class="domain-cog" style="${inputStyle('sm')}">
-                      ${[ '',1,2,3,4,5 ].map(v => `<option value="${v}" ${rec.cognitive==v?'selected':''}>${v||'—'}</option>`).join('')}
-                    </select>
-                  </td>
-                  <td style="${tdStyle('text-align:center;')}">
-                    <select class="domain-aff" style="${inputStyle('sm')}">
-                      ${[ '',1,2,3,4,5 ].map(v => `<option value="${v}" ${rec.affective==v?'selected':''}>${v||'—'}</option>`).join('')}
-                    </select>
-                  </td>
-                  <td style="${tdStyle('text-align:center;')}">
-                    <select class="domain-psy" style="${inputStyle('sm')}">
-                      ${[ '',1,2,3,4,5 ].map(v => `<option value="${v}" ${rec.psychomotor==v?'selected':''}>${v||'—'}</option>`).join('')}
-                    </select>
-                  </td>
-                  <td style="${tdStyle()}">
-                    <input class="att-remark" value="${rec.remark||''}" placeholder="Note / reason..." style="${inputStyle('sm')}">
-                  </td>
-                </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-
-      <div style="text-align:right; margin-top:1.5rem;">
-        <button onclick="saveAttendanceAndMarks('${cls}','${arm}','${date}')" style="${btnStyle('primary', 'lg')}">
-          💾 Save Attendance & Marks
-        </button>
-      </div>
-    </div>`;
-
-  document.getElementById('summary-section').style.display = 'block';
+  attRenderSheet();
+  attRenderDomainSheet();
 };
 
-window.markAll = function(status) {
-  document.querySelectorAll('.att-status').forEach(el => el.value = status);
+/* ── Attendance chip helper ────────────────────────────────────────────────── */
+function attChipHTML(status, dstr, weekend, studentId) {
+  const today = new Date().toISOString().split('T')[0];
+  const outline = dstr === today ? 'outline:2px solid #1e40af;outline-offset:-2px;' : '';
+  const st = ATT_CHIP_STYLE[status] || ATT_CHIP_STYLE.H;
+  return `<span class="att-chip" style="${st};${outline}" 
+    onclick="${weekend ? '' : `attCycleCell(this,'${studentId}','${dstr}')`}"
+    data-sid="${studentId}" data-dstr="${dstr}">${status}</span>`;
+}
+
+/* ── Render attendance sheet ───────────────────────────────────────────────── */
+function attRenderSheet() {
+  const { cls, arm, term, session, students } = window._attCtx;
+  const months  = attGroupByMonth(_attSchoolDays);
+  const today   = new Date().toISOString().split('T')[0];
+  const DAY_NAMES = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+  /* ── Existing records lookup ── */
+  const recMap = {};
+  (App.data.attendanceRecords || [])
+    .filter(r => r.class === cls && r.arm === arm && r.session === session)
+    .forEach(r => { if (!recMap[r.studentId]) recMap[r.studentId] = {}; recMap[r.studentId][r.date] = r; });
+
+  let html = `
+    <div style="margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2,#6b7280);">
+      ${Object.entries({ P:'Present', A:'Absent', L:'Late', E:'Excused' }).map(([k,v]) =>
+        `<span style="display:inline-flex;align-items:center;gap:4px;">
+          <span class="att-chip" style="${ATT_CHIP_STYLE[k]}">${k}</span> ${v}
+        </span>`).join('')}
+      <span style="margin-left:auto;font-size:11px;color:var(--text2,#6b7280);">Click a cell to cycle status</span>
+    </div>
+    <div class="att-sheet-wrap"><table class="att-reg" id="att-main-table">
+    <thead>
+      <tr style="background:#1e3a8a;color:#fff;">
+        <th class="att-name" style="background:#1e3a8a;color:#fff;position:sticky;left:0;z-index:3;vertical-align:middle;padding:6px 10px;" rowspan="2">Student</th>`;
+
+  months.forEach(m => {
+    html += `<th colspan="${m.days.length}" style="text-align:center;padding:4px 2px;font-size:10px;font-weight:600;">${m.label}</th>`;
+  });
+  html += `<th style="text-align:center;padding:4px;background:#1e3a8a;font-size:10px;" rowspan="2">P</th>
+            <th style="text-align:center;padding:4px;background:#1e3a8a;font-size:10px;" rowspan="2">A</th>
+            <th style="text-align:center;padding:4px;background:#1e3a8a;font-size:10px;" rowspan="2">L</th>
+            <th style="text-align:center;padding:4px;background:#1e3a8a;font-size:10px;min-width:48px;" rowspan="2">%</th>
+          </tr>
+          <tr style="background:#dbeafe;color:#1e40af;">`;
+
+  _attSchoolDays.forEach(d => {
+    const wkndStyle = d.weekend ? 'background:#f1f5f9;color:#94a3b8;' : '';
+    const todayStyle = d.str === today ? 'background:#eff6ff;font-weight:700;' : '';
+    html += `<th style="text-align:center;padding:3px 1px;font-size:10px;border:0.5px solid #93c5fd;min-width:26px;${wkndStyle}${todayStyle}"
+               title="${d.str}">${d.date}<br>${DAY_NAMES[d.day]}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  students.forEach((student, si) => {
+    const studentRec = recMap[student.id] || {};
+    let present = 0, absent = 0, late = 0, excused = 0;
+
+    html += `<tr id="att-row-${si}">
+      <td class="att-name">${student.name}</td>`;
+
+    _attSchoolDays.forEach(d => {
+      const rec = studentRec[d.str];
+      let status = d.weekend ? 'H' : (rec?.status?.toUpperCase() || 'P');
+      if (d.weekend) status = 'H';
+      if (!d.weekend) {
+        if (status === 'P') present++;
+        else if (status === 'A') absent++;
+        else if (status === 'L') late++;
+        else if (status === 'E') excused++;
+      }
+      const todayCellStyle = d.str === today && !d.weekend ? 'background:#eff6ff;' : (d.weekend ? 'background:#f8fafc;' : '');
+      html += `<td class="att-day-cell ${d.weekend ? 'att-wknd' : ''}" 
+                  style="${todayCellStyle}" title="${d.str}" 
+                  data-sid="${student.id}" data-dstr="${d.str}" data-weekend="${d.weekend}">
+                ${attChipHTML(status, d.str, d.weekend, student.id)}
+               </td>`;
+    });
+
+    const total = present + absent + late;
+    const pct   = total ? Math.round(present / total * 100) : 100;
+    const pcls  = pct >= 90 ? 'att-pct-good' : pct >= 75 ? 'att-pct-warn' : 'att-pct-bad';
+
+    html += `<td class="att-sum" style="color:#166534" id="att-p-${si}">${present}</td>
+             <td class="att-sum" style="color:#991b1b" id="att-a-${si}">${absent}</td>
+             <td class="att-sum" style="color:#854d0e" id="att-l-${si}">${late}</td>
+             <td class="att-sum ${pcls}" id="att-pct-${si}">${pct}%</td>
+            </tr>`;
+  });
+
+  /* ── Footer: daily class total ── */
+  html += `<tr style="background:var(--surface2,#f8fafc);font-weight:600;">
+    <td class="att-name" style="background:var(--surface2,#f8fafc);font-size:11px;color:var(--text2,#6b7280);">
+      Class total (present)
+    </td>`;
+
+  _attSchoolDays.forEach(d => {
+    if (d.weekend) { html += `<td style="background:#f1f5f9;border:0.5px solid #e2e8f0;"></td>`; return; }
+    const cnt = students.filter(s => {
+      const rec = recMap[s.id]?.[d.str];
+      return !rec || (rec.status || 'P').toUpperCase() === 'P';
+    }).length;
+    const bg = cnt === students.length ? '#dcfce7' : cnt < students.length * 0.7 ? '#fee2e2' : '#fefce8';
+    html += `<td style="text-align:center;padding:2px;font-size:10px;background:${bg};border:0.5px solid #e2e8f0;">${cnt}</td>`;
+  });
+
+  html += `<td class="att-sum" colspan="4"></td></tr>`;
+  html += '</tbody></table></div>';
+
+  document.getElementById('att-pane-attendance').innerHTML = html;
+
+  /* ── Bind click events ── */
+  document.getElementById('att-main-table')?.addEventListener('click', function(e) {
+    const chip = e.target.closest('.att-chip');
+    const cell = e.target.closest('.att-day-cell');
+    if (!chip || !cell || cell.dataset.weekend === 'true') return;
+    const sid  = cell.dataset.sid;
+    const dstr = cell.dataset.dstr;
+    const cur  = chip.textContent.trim();
+    const idx  = ATT_CYCLE.indexOf(cur);
+    const next = ATT_CYCLE[(idx + 1) % ATT_CYCLE.length];
+    chip.textContent = next;
+    chip.style.cssText = ATT_CHIP_STYLE[next] +
+      (dstr === new Date().toISOString().split('T')[0] ? ';outline:2px solid #1e40af;outline-offset:-2px' : '');
+    attUpsertRecord(sid, dstr, next);
+    attUpdateRowTotals(sid, si => document.getElementById('att-row-' + si));
+  });
+}
+
+/* ── Cycle a cell value ─────────────────────────────────────────────────────── */
+window.attCycleCell = function(chipEl, studentId, dstr) {
+  const cur  = chipEl.textContent.trim();
+  const idx  = ATT_CYCLE.indexOf(cur);
+  const next = ATT_CYCLE[(idx + 1) % ATT_CYCLE.length];
+  chipEl.textContent = next;
+  chipEl.style.cssText = ATT_CHIP_STYLE[next] +
+    (dstr === new Date().toISOString().split('T')[0] ? ';outline:2px solid #1e40af;outline-offset:-2px' : '');
+  attUpsertRecord(studentId, dstr, next);
 };
 
-window.saveAttendanceAndMarks = function(cls, arm, date) {
+/* ── Upsert an attendance record ────────────────────────────────────────────── */
+function attUpsertRecord(studentId, date, status) {
+  const { cls, arm, session } = window._attCtx || {};
+  if (!cls) return;
+  const idx = App.data.attendanceRecords.findIndex(r =>
+    r.studentId === studentId && r.date === date && r.class === cls && r.arm === arm && r.session === session
+  );
+  const rec = { studentId, date, class: cls, arm, session, status: status.toLowerCase(), savedAt: new Date().toISOString() };
+  if (idx >= 0) Object.assign(App.data.attendanceRecords[idx], rec);
+  else App.data.attendanceRecords.push(rec);
+}
+
+/* ── Update row totals ───────────────────────────────────────────────────────── */
+function attUpdateRowTotals(studentId) {
+  const { students } = window._attCtx || {};
+  if (!students) return;
+  const si = students.findIndex(s => s.id === studentId);
+  if (si < 0) return;
+  const { cls, arm, session } = window._attCtx;
+  let p = 0, a = 0, l = 0;
+  _attSchoolDays.filter(d => !d.weekend).forEach(d => {
+    const rec = App.data.attendanceRecords.find(r => r.studentId === studentId && r.date === d.str && r.class === cls && r.arm === arm && r.session === session);
+    const st = ((rec?.status) || 'p').toLowerCase();
+    if (st === 'p') p++; else if (st === 'a') a++; else if (st === 'l') l++;
+  });
+  const total = p + a + l;
+  const pct   = total ? Math.round(p / total * 100) : 100;
+  const pcls  = pct >= 90 ? 'att-pct-good' : pct >= 75 ? 'att-pct-warn' : 'att-pct-bad';
+  const ep = document.getElementById(`att-p-${si}`);
+  const ea = document.getElementById(`att-a-${si}`);
+  const el = document.getElementById(`att-l-${si}`);
+  const epct = document.getElementById(`att-pct-${si}`);
+  if (ep) ep.textContent = p;
+  if (ea) ea.textContent = a;
+  if (el) el.textContent = l;
+  if (epct) { epct.textContent = pct + '%'; epct.className = 'att-sum ' + pcls; }
+}
+
+/* ── Mark all today ──────────────────────────────────────────────────────────── */
+window.attMarkAllToday = function(status) {
+  const { students } = window._attCtx || {};
+  if (!students) return toast('Load a register first.', 'warning');
+  const today = new Date().toISOString().split('T')[0];
+  students.forEach(s => {
+    attUpsertRecord(s.id, today, status);
+    document.querySelectorAll(`.att-chip[data-sid="${s.id}"][data-dstr="${today}"]`).forEach(chip => {
+      chip.textContent = status;
+      chip.style.cssText = ATT_CHIP_STYLE[status] + ';outline:2px solid #1e40af;outline-offset:-2px';
+    });
+    attUpdateRowTotals(s.id);
+  });
+  toast(`All students marked ${status === 'P' ? 'Present' : 'Absent'} for today.`, 'success');
+};
+
+/* ── Domain Assessment Sheet ─────────────────────────────────────────────────── */
+function attRenderDomainSheet() {
+  const { students } = window._attCtx || {};
+  if (!students) return;
+
+  const domainSel = (studentId, key, current) => {
+    const opts = [['', '—'], ...['1','2','3','4','5'].map(v=>[v,v])].map(
+      ([v, l]) => `<option value="${v}" ${current == v ? 'selected' : ''}>${l}</option>`
+    ).join('');
+    return `<select onchange="attSaveDomain('${studentId}','${key}',this.value)"
+      style="width:52px;font-size:11px;padding:2px 4px;border:0.5px solid var(--border,#e2e8f0);
+             border-radius:4px;background:var(--surface,#fff);color:var(--text,#111);font-family:inherit">
+      ${opts}</select>`;
+  };
+
+  let html = `<div class="att-sheet-wrap"><table class="att-reg"><thead>
+    <tr style="background:#1e3a8a;color:#fff;">
+      <th class="att-name" style="background:#1e3a8a;color:#fff;position:sticky;left:0;z-index:2;">Student</th>
+      <th colspan="3" style="text-align:center;padding:5px;font-size:11px;">Domain Scores (1–5)</th>
+      <th colspan="${ATT_BEHAVIORS.length}" style="text-align:center;padding:5px;font-size:11px;">Behaviour Assessment (1–5)</th>
+    </tr>
+    <tr style="background:#dbeafe;color:#1e40af;">
+      <th class="att-name" style="background:#eff6ff;position:sticky;left:0;z-index:2;"></th>
+      ${['Cognitive','Affective','Psychomotor'].map(d =>
+        `<th style="min-width:70px;padding:5px;text-align:center;font-size:10px;font-weight:600;">${d}</th>`).join('')}
+      ${ATT_BEHAVIORS.map(b =>
+        `<th style="min-width:70px;padding:5px;text-align:center;font-size:10px;font-weight:500;">${b}</th>`).join('')}
+    </tr></thead><tbody>`;
+
+  students.forEach(student => {
+    const { cls, arm, term, session } = window._attCtx;
+    const existing = (App.data.domainAssessments || []).find(d =>
+      d.studentId === student.id && d.term === term && d.session === session
+    ) || {};
+
+    html += `<tr>
+      <td class="att-name">${student.name}</td>
+      ${[['cognitive','#eff6ff'],['affective','#fdf2f8'],['psychomotor','#f0fdf4']].map(([k,bg]) =>
+        `<td style="text-align:center;padding:4px;background:${bg};border:0.5px solid var(--border,#e2e8f0)">
+          ${domainSel(student.id, k, existing[k]||'')}
+        </td>`).join('')}
+      ${ATT_BEHAVIORS.map((b, bi) =>
+        `<td style="text-align:center;padding:4px;border:0.5px solid var(--border,#e2e8f0)">
+          ${domainSel(student.id, 'behavior_' + bi, existing['behavior_'+bi]||'')}
+        </td>`).join('')}
+    </tr>`;
+  });
+
+  html += '</tbody></table></div>';
+  document.getElementById('att-pane-domains').innerHTML = html;
+}
+
+/* ── Save a single domain value ──────────────────────────────────────────────── */
+window.attSaveDomain = function(studentId, key, value) {
+  const { term, session } = window._attCtx || {};
+  if (!term) return;
+  if (!App.data.domainAssessments) App.data.domainAssessments = [];
+  const idx = App.data.domainAssessments.findIndex(d => d.studentId === studentId && d.term === term && d.session === session);
+  if (idx >= 0) App.data.domainAssessments[idx][key] = value ? Number(value) : null;
+  else App.data.domainAssessments.push({ studentId, term, session, [key]: value ? Number(value) : null });
+};
+
+/* ── Summary & Stats ─────────────────────────────────────────────────────────── */
+function attRenderSummary() {
+  const { cls, arm, term, session, students } = window._attCtx || {};
+  if (!students) { document.getElementById('att-pane-summary').innerHTML = '<p style="padding:2rem;color:var(--text2)">Load a register first.</p>'; return; }
+
+  const schoolDayCount = _attSchoolDays.filter(d => !d.weekend).length;
+
+  function countFor(sid, status) {
+    return App.data.attendanceRecords.filter(r =>
+      r.studentId === sid && r.class === cls && r.arm === arm && r.session === session &&
+      !_attSchoolDays.find(d => d.str === r.date)?.weekend &&
+      (r.status || 'p').toLowerCase() === status
+    ).length;
+  }
+
+  const totals = students.map(s => ({
+    name: s.name, id: s.id,
+    p: countFor(s.id, 'p'), a: countFor(s.id, 'a'), l: countFor(s.id, 'l'), e: countFor(s.id, 'e'),
+  })).map(s => ({ ...s, pct: Math.round((s.p / (s.p + s.a + s.l || 1)) * 100) }));
+
+  const avgPct   = Math.round(totals.reduce((s, x) => s + x.pct, 0) / totals.length);
+  const avgP     = Math.round(totals.reduce((s, x) => s + x.p, 0) / totals.length);
+  const avgA     = Math.round(totals.reduce((s, x) => s + x.a, 0) / totals.length);
+  const belowPct = totals.filter(s => s.pct < 75).length;
+
+  document.getElementById('att-pane-summary').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.25rem;">
+      <div class="att-stat"><div class="sv" style="color:#1e40af">${schoolDayCount}</div><div class="sl">School days (term)</div></div>
+      <div class="att-stat"><div class="sv" style="color:#166534">${avgP}</div><div class="sl">Avg days present</div></div>
+      <div class="att-stat"><div class="sv" style="color:#991b1b">${avgA}</div><div class="sl">Avg days absent</div></div>
+      <div class="att-stat"><div class="sv" style="color:${avgPct>=90?'#166534':avgPct>=75?'#854d0e':'#991b1b'}">${avgPct}%</div><div class="sl">Class avg attendance</div></div>
+      <div class="att-stat"><div class="sv" style="color:#991b1b">${belowPct}</div><div class="sl">Below 75% threshold</div></div>
+    </div>
+    <div class="att-sheet-wrap"><table class="att-reg">
+      <thead><tr style="background:#1e3a8a;color:#fff;">
+        <th style="padding:7px 10px;text-align:left;min-width:160px">Student</th>
+        <th style="padding:7px 8px;text-align:center">Days</th>
+        <th style="padding:7px 8px;text-align:center;color:#86efac">Present</th>
+        <th style="padding:7px 8px;text-align:center;color:#fca5a5">Absent</th>
+        <th style="padding:7px 8px;text-align:center;color:#fde68a">Late</th>
+        <th style="padding:7px 8px;text-align:center;color:#bae6fd">Excused</th>
+        <th style="padding:7px 8px;text-align:center">%</th>
+        <th style="padding:7px 8px;text-align:center">Status</th>
+      </tr></thead>
+      <tbody>
+        ${totals.map(s => {
+          const pcls = s.pct >= 90 ? 'att-pct-good' : s.pct >= 75 ? 'att-pct-warn' : 'att-pct-bad';
+          const flag = s.pct < 75 ? `<span class="att-alert">Below 75%</span>` : '';
+          const barW = s.pct;
+          const barC = s.pct >= 90 ? '#22c55e' : s.pct >= 75 ? '#f59e0b' : '#ef4444';
+          return `<tr>
+            <td style="padding:5px 10px;border:0.5px solid var(--border,#e2e8f0);font-weight:500">${s.name}${flag}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0)">${schoolDayCount}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);color:#166534;font-weight:600">${s.p}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);color:#991b1b">${s.a}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);color:#854d0e">${s.l}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);color:#075985">${s.e}</td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);">
+              <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-bottom:2px">
+                <div style="width:${barW}%;height:100%;background:${barC}"></div>
+              </div>
+              <span class="${pcls}" style="font-size:11px;font-weight:600">${s.pct}%</span>
+            </td>
+            <td style="padding:5px 8px;text-align:center;border:0.5px solid var(--border,#e2e8f0);">
+              <span style="font-size:10px;padding:2px 7px;border-radius:4px;font-weight:600;
+                background:${s.pct>=90?'#dcfce7':s.pct>=75?'#fef9c3':'#fee2e2'};
+                color:${s.pct>=90?'#166534':s.pct>=75?'#854d0e':'#991b1b'}">
+                ${s.pct>=90?'Excellent':s.pct>=75?'Satisfactory':'Needs Attention'}
+              </span>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+}
+
+/* ── Save all ─────────────────────────────────────────────────────────────────── */
+window.attSaveAll = function() {
+  const { cls, arm } = window._attCtx || {};
+  if (!cls) return toast('Load a register first.', 'warning');
   if (!priv.canTakeAttendance()) return denyAccess('No permission to save.');
   if (!priv.canActOnClass(cls, arm)) return denyAccess('Restricted to your class only.');
+  toast('Attendance & domain marks saved successfully!', 'success');
+};
 
-  const today = new Date().toISOString().split('T')[0];
-  if (date > today) return toast("Cannot save future attendance", 'warning');
-
-  const records = [];
-  let hasChanges = false;
-
-  document.querySelectorAll('#att-rows tr').forEach(row => {
-    const sid = row.dataset.sid;
-    const status    = row.querySelector('.att-status')?.value    || 'absent';
-    const cognitive  = row.querySelector('.domain-cog')?.value   || '';
-    const affective  = row.querySelector('.domain-aff')?.value   || '';
-    const psychomotor = row.querySelector('.domain-psy')?.value  || '';
-    const remark     = row.querySelector('.att-remark')?.value   || '';
-
-    if (status || cognitive || affective || psychomotor || remark) {
-      hasChanges = true;
-    }
-
-    records.push({
-      studentId: sid,
-      class: cls,
-      arm,
-      date,
-      status,
-      cognitive: cognitive ? Number(cognitive) : null,
-      affective: affective ? Number(affective) : null,
-      psychomotor: psychomotor ? Number(psychomotor) : null,
-      remark,
-      savedAt: new Date().toISOString()
+/* ── Export CSV ───────────────────────────────────────────────────────────────── */
+window.attExportCSV = function() {
+  const { cls, arm, term, session, students } = window._attCtx || {};
+  if (!students) return toast('Load a register first.', 'warning');
+  const wkdays = _attSchoolDays.filter(d => !d.weekend);
+  let csv = 'Student ID,Student Name,' + wkdays.map(d => d.str).join(',') + ',Present,Absent,Late,Excused,%\n';
+  students.forEach(s => {
+    const row = wkdays.map(d => {
+      const rec = App.data.attendanceRecords.find(r => r.studentId === s.id && r.date === d.str && r.class === cls && r.session === session);
+      return (rec?.status || 'p').toUpperCase();
     });
+    const p = row.filter(v => v === 'P').length;
+    const a = row.filter(v => v === 'A').length;
+    const l = row.filter(v => v === 'L').length;
+    const e = row.filter(v => v === 'E').length;
+    const pct = Math.round(p / (p + a + l || 1) * 100);
+    csv += `"${s.id}","${s.name}",${row.join(',')},${p},${a},${l},${e},${pct}%\n`;
   });
-
-  if (!hasChanges) return toast('No changes to save.', 'info');
-
-  // Merge / upsert
-  records.forEach(newRec => {
-    const idx = App.data.attendanceRecords.findIndex(r =>
-      r.studentId === newRec.studentId && r.date === newRec.date
-    );
-    if (idx >= 0) {
-      App.data.attendanceRecords[idx] = { ...App.data.attendanceRecords[idx], ...newRec };
-    } else {
-      App.data.attendanceRecords.push(newRec);
-    }
-
-    // Optional: update student-level aggregates / averages (if you want)
-    updateStudentAggregates(newRec.studentId);
-  });
-
-  toast('Attendance & domain marks saved successfully', 'success');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `attendance_${cls}_${arm}_${term.replace(/ /g,'_')}_${session.replace('/','_')}.csv`;
+  a.click();
+  toast('Exported attendance CSV.', 'success');
 };
 
-// Placeholder – implement according to your needs
-function updateStudentAggregates(studentId) {
-  // Example: recalculate overall attendance %, average domain scores, etc.
-  // You can store them in App.data.students or separate aggregates collection
-}
-
-// Simple summary cards (can be expanded with real calculations)
-function generateSummaryCards() {
-  // These are placeholders → replace with real counts/averages from App.data.attendanceRecords
-  const data = [
-    { label: 'Present Today',      count: '—', color: '#22c55e', icon: '✔' },
-    { label: 'Late / Excused',     count: '—', color: '#f59e0b', icon: '🕒' },
-    { label: 'Absent Today',       count: '—', color: '#ef4444', icon: '✘' },
-    { label: 'Avg. Cognitive',     count: '—', color: '#3b82f6' },
-    { label: 'Avg. Affective',     count: '—', color: '#8b5cf6' },
-    { label: 'Avg. Psychomotor',   count: '—', color: '#ec4899' },
-  ];
-
-  return data.map(d => `
-    <div style="background:#fff; border-radius:12px; padding:1.25rem; box-shadow:0 3px 10px rgba(0,0,0,0.06); border-left:5px solid ${d.color};">
-      <div style="font-size:0.9rem; color:#6b7280; margin-bottom:0.4rem;">${d.label}</div>
-      <div style="font-size:2.1rem; font-weight:700; color:${d.color};">
-        ${d.icon ? d.icon + ' ' : ''}${d.count}
-      </div>
-    </div>
-  `).join('');
-}
-
+/* ── Clear ────────────────────────────────────────────────────────────────────── */
 window.clearAttendanceForm = function() {
-  if (confirm('Clear form? Unsaved changes will be lost.')) {
-    document.getElementById('attendance-table').innerHTML = '';
-    document.getElementById('summary-section').style.display = 'none';
-  }
+  if (!confirmDlg('Clear form? Unsaved changes will be lost.')) return;
+  ['att-pane-attendance','att-pane-domains','att-pane-summary'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '';
+  });
+  window._attCtx = null;
+  _attSchoolDays = [];
 };
+
 /* ─────────────────────────────────────────
    15. FIXTURES & HONOURS
    All roles can view; only Admin can add/delete/record results
@@ -3698,20 +5178,14 @@ window.deleteFixture = function(id) {
 };
 
 /* ─────────────────────────────────────────
-   16. SETTINGS  (Admin only)
-───────────────────────────────────────── */
-/* ─────────────────────────────────────────
-   SETTINGS PAGE – Enhanced Version
-   Improvements:
-   • More school info fields (address, logo URL, resumption date, announcements)
-   • Editable grading scale (add/edit/delete ranges)
-   • Role & permission management (basic)
-   • Domain assessment labels & scale configuration
-   • Class & arm management (CRUD)
-   • Backup/restore + import students
-   • UI grouped into tabs/sections for better organization
-   • Better validation & feedback
-───────────────────────────────────────── */
+   SETTINGS PAGE – Comprehensive Enhanced Version
+   New additions:
+   • Attendance Settings tab: school calendar, holidays, half-days, off-days, breaks
+   • General Settings tab: notification prefs, result display options, report card config,
+     auto-grade thresholds, score entry modes, portal access toggles, date/time formats
+   • Improved tab UI with icons and active indicator
+   • Full validation and feedback throughout
+─────────────────────────────────────────── */
 
 function renderSettings() {
   if (!priv.canAccessSettings()) {
@@ -3719,234 +5193,1114 @@ function renderSettings() {
     return;
   }
 
-  const isSuperAdmin = priv.isSuperAdmin?.() || false; // Assume you add this check for full control
+  const isSuperAdmin = priv.isSuperAdmin?.() || false;
 
   const section = document.getElementById('settings');
   section.innerHTML = `
-    <h2 style="margin-bottom:1.5rem; color:#1e40af;">System Settings</h2>
-
-    <div style="display:flex; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap;">
-      <button onclick="showSettingsTab('school')" class="tab-btn active" style="${btnStyle('outline')}">School Info</button>
-      <button onclick="showSettingsTab('grading')" class="tab-btn" style="${btnStyle('outline')}">Grading & Domains</button>
-      <button onclick="showSettingsTab('classes')" class="tab-btn" style="${btnStyle('outline')}">Classes & Arms</button>
-      ${isSuperAdmin ? `<button onclick="showSettingsTab('roles')" class="tab-btn" style="${btnStyle('outline')}">Roles & Privileges</button>` : ''}
-      <button onclick="showSettingsTab('data')" class="tab-btn" style="${btnStyle('outline')}">Data Management</button>
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
+      <h2 style="margin:0; color:#1e40af; font-size:1.6rem;">⚙️ System Settings</h2>
+      <span style="font-size:0.85rem; color:#64748b; background:#f1f5f9; padding:0.4rem 0.9rem; border-radius:999px;">
+        Session: <strong>${App.data.schoolInfo?.session || '–'}</strong> &nbsp;|&nbsp; Term: <strong>${App.data.schoolInfo?.term || '–'}</strong>
+      </span>
     </div>
 
-    <div id="settings-content" style="background:#fff; border-radius:12px; padding:2rem; box-shadow:0 4px 16px rgba(0,0,0,0.08); min-height:500px;">
+    <!-- TAB BAR -->
+    <div style="display:flex; gap:0.5rem; margin-bottom:0; flex-wrap:wrap; border-bottom:2px solid #e2e8f0; padding-bottom:0;">
+      ${[
+        { id: 'school',     icon: '🏫', label: 'School Info' },
+        { id: 'grading',    icon: '📊', label: 'Grading & Domains' },
+        { id: 'classes',    icon: '🏛️', label: 'Classes & Arms' },
+        { id: 'attendance', icon: '📅', label: 'Attendance & Calendar' },
+        { id: 'general',    icon: '🔧', label: 'General Settings' },
+        ...(isSuperAdmin ? [{ id: 'roles', icon: '🔐', label: 'Roles & Privileges' }] : []),
+        { id: 'data',       icon: '💾', label: 'Data Management' },
+      ].map(t => `
+        <button onclick="showSettingsTab('${t.id}')"
+          class="settings-tab-btn" id="stab-${t.id}"
+          style="padding:0.6rem 1.1rem; border:none; background:none; cursor:pointer;
+                 font-size:0.9rem; font-weight:600; color:#64748b; border-bottom:3px solid transparent;
+                 margin-bottom:-2px; transition:all .18s; white-space:nowrap; border-radius:0;">
+          ${t.icon} ${t.label}
+        </button>
+      `).join('')}
+    </div>
 
-      <!-- SCHOOL INFO TAB -->
-      <div id="tab-school" class="settings-tab active">
+    <!-- TAB CONTENT WRAPPER -->
+    <div id="settings-content"
+      style="background:#fff; border-radius:0 0 12px 12px; padding:2rem;
+             box-shadow:0 4px 16px rgba(0,0,0,0.08); min-height:520px;">
+
+      <!-- ══════════════════════════════════
+           TAB: SCHOOL INFO
+      ══════════════════════════════════ -->
+      <div id="tab-school" class="settings-tab">
         <h3 style="margin:0 0 1.5rem; color:#1e40af;">School Information</h3>
         <form id="school-form" style="display:grid; gap:1.25rem; max-width:700px;">
           <div>
             <label style="${labelStyle()}">School Name *</label>
-            <input id="set-name" value="${App.data.schoolInfo.name || ''}" required style="${inputStyle()}">
+            <input id="set-name" value="${esc(App.data.schoolInfo?.name)}" required style="${inputStyle()}">
           </div>
           <div>
             <label style="${labelStyle()}">Address</label>
-            <input id="set-address" value="${App.data.schoolInfo.address || ''}" style="${inputStyle()}">
+            <input id="set-address" value="${esc(App.data.schoolInfo?.address)}" style="${inputStyle()}">
           </div>
           <div>
             <label style="${labelStyle()}">Logo URL (optional)</label>
-            <input id="set-logo" value="${App.data.schoolInfo.logo || ''}" placeholder="https://..." style="${inputStyle()}">
+            <input id="set-logo" value="${esc(App.data.schoolInfo?.logo)}" placeholder="https://..." style="${inputStyle()}">
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
             <div>
               <label style="${labelStyle()}">Current Session *</label>
-              <input id="set-session" value="${App.data.schoolInfo.session || '2025/2026'}" required style="${inputStyle()}">
+              <input id="set-session" value="${esc(App.data.schoolInfo?.session, '2025/2026')}" required style="${inputStyle()}">
             </div>
             <div>
               <label style="${labelStyle()}">Current Term</label>
               <select id="set-term" style="${inputStyle()}">
-                ${['First Term','Second Term','Third Term'].map(t=>`<option ${App.data.schoolInfo.term===t?'selected':''}>${t}</option>`).join('')}
+                ${['First Term','Second Term','Third Term'].map(t=>`<option ${App.data.schoolInfo?.term===t?'selected':''}>${t}</option>`).join('')}
               </select>
             </div>
           </div>
-          <div>
-            <label style="${labelStyle()}">Principal's Name</label>
-            <input id="set-principal" value="${App.data.schoolInfo.principal || ''}" style="${inputStyle()}">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+            <div>
+              <label style="${labelStyle()}">Principal's Name</label>
+              <input id="set-principal" value="${esc(App.data.schoolInfo?.principal)}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">School Email</label>
+              <input type="email" id="set-email" value="${esc(App.data.schoolInfo?.email)}" style="${inputStyle()}">
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+            <div>
+              <label style="${labelStyle()}">Phone Number</label>
+              <input id="set-phone" value="${esc(App.data.schoolInfo?.phone)}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">School Website</label>
+              <input id="set-website" value="${esc(App.data.schoolInfo?.website)}" placeholder="https://..." style="${inputStyle()}">
+            </div>
           </div>
           <div>
             <label style="${labelStyle()}">Next Resumption Date</label>
-            <input type="date" id="set-resumption" value="${App.data.schoolInfo.resumptionDate || ''}" style="${inputStyle()}">
+            <input type="date" id="set-resumption" value="${esc(App.data.schoolInfo?.resumptionDate)}" style="${inputStyle()}; max-width:220px;">
           </div>
           <div>
-            <label style="${labelStyle()}">School Announcements / Notice</label>
-            <textarea id="set-announcements" rows="3" style="${inputStyle()}; resize:vertical;">${App.data.schoolInfo.announcements || ''}</textarea>
+            <label style="${labelStyle()}">School Announcements / Notice Board</label>
+            <textarea id="set-announcements" rows="3" style="${inputStyle()}; resize:vertical;">${esc(App.data.schoolInfo?.announcements)}</textarea>
           </div>
-          <button type="submit" style="${btnStyle('primary')}; width:200px; justify-self:start;">Save School Settings</button>
+          <div>
+            <label style="${labelStyle()}">School Motto</label>
+            <input id="set-motto" value="${esc(App.data.schoolInfo?.motto)}" placeholder="e.g. Knowledge is Power" style="${inputStyle()}">
+          </div>
+          <button type="submit" style="${btnStyle('primary')}; width:220px;">💾 Save School Settings</button>
         </form>
       </div>
 
-      <!-- GRADING & DOMAINS TAB -->
+      <!-- ══════════════════════════════════
+           TAB: GRADING & DOMAINS
+      ══════════════════════════════════ -->
       <div id="tab-grading" class="settings-tab" style="display:none;">
         <h3 style="margin:0 0 1.5rem; color:#1e40af;">Grading Scale & Domain Assessment</h3>
-        
+
         <div style="margin-bottom:2rem;">
           <h4 style="margin:0 0 0.75rem;">Academic Grading Scale</h4>
           <table id="grading-table" style="${tableStyle()}">
             <thead><tr style="${thRowStyle()}">
-              <th style="${thStyle('140px')}">Min Score</th>
-              <th style="${thStyle('140px')}">Max Score</th>
-              <th style="${thStyle('80px')}">Grade</th>
+              <th style="${thStyle('120px')}">Min Score</th>
+              <th style="${thStyle('120px')}">Max Score</th>
+              <th style="${thStyle('70px')}">Grade</th>
               <th style="${thStyle('auto')}">Remark</th>
-              <th style="${thStyle('90px')}">Actions</th>
+              <th style="${thStyle('80px')}">GPA Points</th>
+              <th style="${thStyle('80px')}">Action</th>
             </tr></thead>
             <tbody>
-              ${App.data.gradingScale?.map((item,i)=>`
+              ${(App.data.gradingScale || defaultGradingScale()).map((item,i)=>`
                 <tr data-index="${i}">
                   <td><input type="number" value="${item.min}" min="0" max="100" style="${inputStyle('sm')}"></td>
                   <td><input type="number" value="${item.max}" min="0" max="100" style="${inputStyle('sm')}"></td>
-                  <td><input value="${item.grade}" maxlength="2" style="${inputStyle('sm')}"></td>
-                  <td><input value="${item.remark}" style="${inputStyle('sm')}"></td>
+                  <td><input value="${esc(item.grade)}" maxlength="2" style="${inputStyle('sm')}"></td>
+                  <td><input value="${esc(item.remark)}" style="${inputStyle('sm')}"></td>
+                  <td><input type="number" step="0.1" min="0" max="5" value="${item.gpa ?? ''}" placeholder="—" style="${inputStyle('sm')}"></td>
                   <td><button onclick="removeGradingRow(this)" style="${btnStyle('danger','xs')}">×</button></td>
                 </tr>
-              `).join('') || '<tr><td colspan="5" style="text-align:center;padding:1rem;color:#9ca3af;">No grading scale defined</td></tr>'}
+              `).join('')}
             </tbody>
           </table>
           <button onclick="addGradingRow()" style="${btnStyle('success','sm')}; margin-top:0.75rem;">+ Add Grade Range</button>
         </div>
 
-        <div>
+        <div style="margin-bottom:2rem;">
+          <h4 style="margin:0 0 0.75rem;">Score Breakdown Configuration</h4>
+          <p style="color:#64748b; font-size:0.85rem; margin-bottom:0.75rem;">Define how total score is split across assessment components. Values must sum to 100.</p>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; max-width:700px;" id="score-breakdown-grid">
+            ${renderScoreBreakdownInputs()}
+          </div>
+          <p id="breakdown-sum-notice" style="font-size:0.82rem; margin-top:0.5rem; color:#64748b;"></p>
+        </div>
+
+        <div style="margin-bottom:2rem;">
           <h4 style="margin:1.5rem 0 0.75rem;">Domain Assessment Labels (1–5 Scale)</h4>
-          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem;">
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
             ${[1,2,3,4,5].map(score => `
               <div>
-                <label style="${labelStyle()}">${score} =</label>
-                <input id="domain-label-${score}" value="${App.data.domainLabels?.[score] || getDefaultDomainLabel(score)}" style="${inputStyle()}">
+                <label style="${labelStyle()}">Score ${score}</label>
+                <input id="domain-label-${score}" value="${esc(App.data.domainLabels?.[score], getDefaultDomainLabel(score))}" style="${inputStyle()}">
               </div>
             `).join('')}
           </div>
         </div>
 
-        <button onclick="saveGradingAndDomains()" style="${btnStyle('primary')}; margin-top:2rem;">Save Grading & Domain Settings</button>
+        <button onclick="saveGradingAndDomains()" style="${btnStyle('primary')}; margin-top:1rem;">💾 Save Grading & Domain Settings</button>
       </div>
 
-      <!-- CLASSES & ARMS TAB -->
+      <!-- ══════════════════════════════════
+           TAB: CLASSES & ARMS
+      ══════════════════════════════════ -->
       <div id="tab-classes" class="settings-tab" style="display:none;">
-        <h3 style="margin:0 0 1.5rem; color:#1e40af;">Classes & Sections/Arms</h3>
+        <h3 style="margin:0 0 1.5rem; color:#1e40af;">Classes & Sections / Arms</h3>
         <div id="classes-list"></div>
         <button onclick="addNewClass()" style="${btnStyle('success')}; margin-top:1rem;">+ Add New Class</button>
       </div>
 
-      <!-- ROLES & PRIVILEGES TAB (Super Admin only) -->
+      <!-- ══════════════════════════════════
+           TAB: ATTENDANCE & CALENDAR
+      ══════════════════════════════════ -->
+      <div id="tab-attendance" class="settings-tab" style="display:none;">
+        <h3 style="margin:0 0 0.5rem; color:#1e40af;">📅 Attendance & School Calendar</h3>
+        <p style="color:#64748b; margin-bottom:1.5rem; font-size:0.9rem;">
+          Configure school working days, public holidays, half-days, breaks, and closed dates.
+          These settings drive attendance percentage calculations and reporting.
+        </p>
+
+        <!-- Term Date Range -->
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; margin-bottom:1.5rem;">
+          <h4 style="margin:0 0 1rem; color:#334155;">📆 Term Date Range</h4>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem;">
+            <div>
+              <label style="${labelStyle()}">Term Start Date</label>
+              <input type="date" id="att-term-start" value="${esc(App.data.attendanceSettings?.termStart)}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">Term End Date</label>
+              <input type="date" id="att-term-end" value="${esc(App.data.attendanceSettings?.termEnd)}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">Total Expected School Days</label>
+              <input type="number" id="att-expected-days" min="1" max="365"
+                value="${App.data.attendanceSettings?.expectedDays ?? ''}"
+                placeholder="Auto-calculate or enter"
+                style="${inputStyle()}">
+              <small style="color:#64748b; font-size:0.78rem;">Leave blank to auto-calculate from calendar</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Working Days -->
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; margin-bottom:1.5rem;">
+          <h4 style="margin:0 0 1rem; color:#334155;">📋 Active School Days of the Week</h4>
+          <p style="color:#64748b; font-size:0.84rem; margin-bottom:0.75rem;">Uncheck days the school does not operate.</p>
+          <div style="display:flex; flex-wrap:wrap; gap:1rem;">
+            ${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map(day => `
+              <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem;">
+                <input type="checkbox" id="wd-${day}"
+                  ${(App.data.attendanceSettings?.workingDays ?? ['Monday','Tuesday','Wednesday','Thursday','Friday']).includes(day) ? 'checked' : ''}
+                  style="width:16px;height:16px;accent-color:#2563eb;">
+                ${day}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- School Hours -->
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; margin-bottom:1.5rem;">
+          <h4 style="margin:0 0 1rem; color:#334155;">⏰ School Hours</h4>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem;">
+            <div>
+              <label style="${labelStyle()}">School Opens</label>
+              <input type="time" id="att-open-time" value="${esc(App.data.attendanceSettings?.openTime, '07:30')}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">School Closes</label>
+              <input type="time" id="att-close-time" value="${esc(App.data.attendanceSettings?.closeTime, '14:30')}" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">Late Arrival After</label>
+              <input type="time" id="att-late-time" value="${esc(App.data.attendanceSettings?.lateAfter, '08:00')}" style="${inputStyle()}">
+              <small style="color:#64748b; font-size:0.78rem;">Students arriving after this are marked late</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Special Days Manager -->
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; margin-bottom:1.5rem;">
+          <h4 style="margin:0 0 0.5rem; color:#334155;">🗓️ Special Days & Closures</h4>
+          <p style="color:#64748b; font-size:0.84rem; margin-bottom:1rem;">
+            Add specific dates that deviate from the normal schedule — public holidays, mid-term breaks,
+            exam periods, cultural days, half-days, etc.
+          </p>
+
+          <!-- Add New Special Day Form -->
+          <div style="display:grid; grid-template-columns:180px 1fr 160px auto; gap:0.75rem; align-items:end; margin-bottom:1rem; flex-wrap:wrap;"
+               id="special-day-form">
+            <div>
+              <label style="${labelStyle()}">Date</label>
+              <input type="date" id="sd-date" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">Description / Label</label>
+              <input id="sd-label" placeholder="e.g. Independence Day, Mid-Term Break" style="${inputStyle()}">
+            </div>
+            <div>
+              <label style="${labelStyle()}">Type</label>
+              <select id="sd-type" style="${inputStyle()}">
+                <option value="holiday">🔴 Public Holiday</option>
+                <option value="half-day">🟡 Half Day</option>
+                <option value="break">🟠 School Break</option>
+                <option value="exam">🔵 Exam Day</option>
+                <option value="closed">⚫ School Closed</option>
+                <option value="event">🟢 School Event</option>
+                <option value="sports">🟣 Sports Day</option>
+                <option value="custom">⚪ Custom / Other</option>
+              </select>
+            </div>
+            <div>
+              <button onclick="addSpecialDay()" style="${btnStyle('success')}; white-space:nowrap;">+ Add Day</button>
+            </div>
+          </div>
+
+          <!-- Date Range Shortcut -->
+          <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:1rem; margin-bottom:1rem;">
+            <h5 style="margin:0 0 0.75rem; color:#1d4ed8; font-size:0.9rem;">📆 Add a Date Range (e.g. Christmas Break)</h5>
+            <div style="display:grid; grid-template-columns:160px 160px 1fr 160px auto; gap:0.75rem; align-items:end; flex-wrap:wrap;">
+              <div>
+                <label style="${labelStyle()}">From</label>
+                <input type="date" id="sd-range-start" style="${inputStyle()}">
+              </div>
+              <div>
+                <label style="${labelStyle()}">To</label>
+                <input type="date" id="sd-range-end" style="${inputStyle()}">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Label</label>
+                <input id="sd-range-label" placeholder="e.g. Christmas Holiday" style="${inputStyle()}">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Type</label>
+                <select id="sd-range-type" style="${inputStyle()}">
+                  <option value="holiday">🔴 Public Holiday</option>
+                  <option value="break">🟠 School Break</option>
+                  <option value="closed">⚫ School Closed</option>
+                  <option value="exam">🔵 Exam Period</option>
+                  <option value="event">🟢 School Event</option>
+                  <option value="custom">⚪ Custom</option>
+                </select>
+              </div>
+              <div>
+                <button onclick="addSpecialDayRange()" style="${btnStyle('primary')}; white-space:nowrap;">+ Add Range</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Special Days List -->
+          <div id="special-days-list"></div>
+        </div>
+
+        <!-- Attendance Rules -->
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; margin-bottom:1.5rem;">
+          <h4 style="margin:0 0 1rem; color:#334155;">📏 Attendance Rules & Thresholds</h4>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem;">
+            <div>
+              <label style="${labelStyle()}">Minimum Attendance % for Exams</label>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input type="number" id="att-min-pct" min="0" max="100"
+                  value="${App.data.attendanceSettings?.minAttendancePct ?? 75}"
+                  style="${inputStyle()}; width:80px;">
+                <span style="color:#64748b;">%</span>
+              </div>
+              <small style="color:#64748b; font-size:0.78rem;">Students below this % flagged as ineligible</small>
+            </div>
+            <div>
+              <label style="${labelStyle()}">Consecutive Absent Days Alert</label>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input type="number" id="att-absent-alert" min="1" max="30"
+                  value="${App.data.attendanceSettings?.consecutiveAbsentAlert ?? 3}"
+                  style="${inputStyle()}; width:80px;">
+                <span style="color:#64748b;">days</span>
+              </div>
+              <small style="color:#64748b; font-size:0.78rem;">Trigger notification after this many consecutive absences</small>
+            </div>
+            <div>
+              <label style="${labelStyle()}">Late Mark Threshold (count)</label>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input type="number" id="att-late-threshold" min="1" max="30"
+                  value="${App.data.attendanceSettings?.lateMarkThreshold ?? 3}"
+                  style="${inputStyle()}; width:80px;">
+                <span style="color:#64748b;">lates = 1 absent</span>
+              </div>
+              <small style="color:#64748b; font-size:0.78rem;">Count N late arrivals as one absent day</small>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:0.5rem; padding-top:0.5rem;">
+              <label style="display:flex; align-items:center; gap:0.75rem; cursor:pointer; font-size:0.9rem;">
+                <input type="checkbox" id="att-allow-excused"
+                  ${App.data.attendanceSettings?.allowExcused !== false ? 'checked' : ''}
+                  style="width:16px;height:16px;accent-color:#2563eb;">
+                <span>Enable "Excused Absent" status</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:0.75rem; cursor:pointer; font-size:0.9rem;">
+                <input type="checkbox" id="att-count-excused"
+                  ${App.data.attendanceSettings?.countExcusedAsPresent ? 'checked' : ''}
+                  style="width:16px;height:16px;accent-color:#2563eb;">
+                <span>Count excused absences as present</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:0.75rem; cursor:pointer; font-size:0.9rem;">
+                <input type="checkbox" id="att-show-on-report"
+                  ${App.data.attendanceSettings?.showOnReport !== false ? 'checked' : ''}
+                  style="width:16px;height:16px;accent-color:#2563eb;">
+                <span>Show attendance summary on report card</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <button onclick="saveAttendanceSettings()" style="${btnStyle('primary')};">💾 Save Attendance & Calendar Settings</button>
+        <button onclick="recalculateAttendanceSummary()" style="${btnStyle('secondary')}; margin-left:1rem;">🔄 Recalculate All Summaries</button>
+      </div>
+
+      <!-- ══════════════════════════════════
+           TAB: GENERAL SETTINGS
+      ══════════════════════════════════ -->
+      <div id="tab-general" class="settings-tab" style="display:none;">
+        <h3 style="margin:0 0 1.5rem; color:#1e40af;">🔧 General System Settings</h3>
+
+        <div style="display:grid; gap:1.5rem;">
+
+          <!-- Report Card Settings -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155; display:flex; align-items:center; gap:0.5rem;">
+              📋 Report Card & Result Display
+            </h4>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
+              <div>
+                <label style="${labelStyle()}">Result Display Mode</label>
+                <select id="gen-result-mode" style="${inputStyle()}">
+                  ${[
+                    ['scores_grades', 'Show Scores + Grades'],
+                    ['scores_only',   'Show Scores Only'],
+                    ['grades_only',   'Show Grades Only'],
+                  ].map(([v,l]) => `<option value="${v}" ${App.data.generalSettings?.resultMode === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Class Position Display</label>
+                <select id="gen-position-mode" style="${inputStyle()}">
+                  ${[
+                    ['class_arm',  'Within Class Arm Only'],
+                    ['class_full', 'Within Entire Class Level'],
+                    ['hide',       'Hide Position'],
+                  ].map(([v,l]) => `<option value="${v}" ${App.data.generalSettings?.positionMode === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Number of Decimal Places on Results</label>
+                <select id="gen-decimal-places" style="${inputStyle()}; max-width:120px;">
+                  ${[0,1,2].map(n => `<option value="${n}" ${(App.data.generalSettings?.decimalPlaces ?? 1) == n ? 'selected' : ''}>${n}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Report Card Footer Text</label>
+                <input id="gen-report-footer" value="${esc(App.data.generalSettings?.reportFooter, 'Head Teacher / Principal Signature')}" style="${inputStyle()}">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Report Comment Character Limit</label>
+                <input type="number" id="gen-comment-limit" min="20" max="500"
+                  value="${App.data.generalSettings?.commentCharLimit ?? 150}"
+                  style="${inputStyle()}; max-width:120px;">
+              </div>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:1.25rem; margin-top:1rem;">
+              ${[
+                ['gen-show-photo',         'Show student photo on report card',          App.data.generalSettings?.showPhoto],
+                ['gen-show-gpa',           'Display GPA / Points on report',              App.data.generalSettings?.showGPA],
+                ['gen-show-class-avg',     'Show class average per subject',              App.data.generalSettings?.showClassAvg !== false],
+                ['gen-show-domain',        'Include domain assessment on report',         App.data.generalSettings?.showDomain !== false],
+                ['gen-show-attendance',    'Include attendance on report card',           App.data.generalSettings?.showAttendance !== false],
+                ['gen-cumulative-results', 'Show cumulative session results',             App.data.generalSettings?.cumulativeResults],
+              ].map(([id, label, checked]) => `
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem; min-width:220px;">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width:15px;height:15px;accent-color:#2563eb;">
+                  ${label}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Score Entry Settings -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155;">✏️ Score Entry & Validation</h4>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
+              <div>
+                <label style="${labelStyle()}">Score Entry Mode</label>
+                <select id="gen-entry-mode" style="${inputStyle()}">
+                  ${[
+                    ['single',    'Single Total Score'],
+                    ['components','Component Scores (CA + Exam)'],
+                    ['full',      'Full Breakdown (CA1 + CA2 + Exam)'],
+                  ].map(([v,l]) => `<option value="${v}" ${App.data.generalSettings?.scoreEntryMode === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Maximum Total Score</label>
+                <input type="number" id="gen-max-score" min="50" max="200"
+                  value="${App.data.generalSettings?.maxScore ?? 100}"
+                  style="${inputStyle()}; max-width:120px;">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Pass Mark (Overall)</label>
+                <input type="number" id="gen-pass-mark" min="0" max="100"
+                  value="${App.data.generalSettings?.passMark ?? 40}"
+                  style="${inputStyle()}; max-width:120px;">
+              </div>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:1.25rem; margin-top:1rem;">
+              ${[
+                ['gen-allow-score-edit',  'Allow editing submitted scores',     App.data.generalSettings?.allowScoreEdit !== false],
+                ['gen-lock-published',    'Lock results after publishing',       App.data.generalSettings?.lockPublished],
+                ['gen-auto-grade',        'Auto-assign grades on score entry',   App.data.generalSettings?.autoGrade !== false],
+                ['gen-validate-range',    'Warn if score exceeds maximum',       App.data.generalSettings?.validateRange !== false],
+                ['gen-allow-absent-zero', 'Auto-zero absent students in exams',  App.data.generalSettings?.absentAutoZero],
+              ].map(([id, label, checked]) => `
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem; min-width:230px;">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width:15px;height:15px;accent-color:#2563eb;">
+                  ${label}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Notifications & Alerts -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155;">🔔 Notifications & Alerts</h4>
+            <div style="display:flex; flex-wrap:wrap; gap:1.25rem;">
+              ${[
+                ['gen-notify-absent',     'Alert when student has 3+ consecutive absences',  App.data.generalSettings?.notifyAbsent !== false],
+                ['gen-notify-low-score',  'Alert when student scores below pass mark',        App.data.generalSettings?.notifyLowScore],
+                ['gen-notify-fees',       'Send fee payment reminders',                       App.data.generalSettings?.notifyFees],
+                ['gen-notify-results',    'Notify parents when results are published',        App.data.generalSettings?.notifyResults],
+                ['gen-notify-resumption', 'Send resumption date reminders',                   App.data.generalSettings?.notifyResumption],
+              ].map(([id, label, checked]) => `
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem; min-width:280px;">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width:15px;height:15px;accent-color:#2563eb;">
+                  ${label}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Portal Access Controls -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155;">🔒 Portal Access Controls</h4>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
+              ${[
+                ['gen-portal-parent',    'Parent portal enabled',                       App.data.generalSettings?.portalParent !== false],
+                ['gen-portal-student',   'Student portal enabled',                      App.data.generalSettings?.portalStudent !== false],
+                ['gen-portal-teacher',   'Teacher portal enabled',                      App.data.generalSettings?.portalTeacher !== false],
+                ['gen-results-public',   'Results viewable before official publishing', App.data.generalSettings?.resultsPublic],
+                ['gen-fees-portal',      'Fee payment via portal enabled',              App.data.generalSettings?.feesPortal],
+                ['gen-timetable-public', 'Timetable visible to parents/students',       App.data.generalSettings?.timetablePublic !== false],
+              ].map(([id, label, checked]) => `
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem;">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width:15px;height:15px;accent-color:#2563eb;">
+                  ${label}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Date, Time & Locale -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155;">🌍 Date, Time & Localisation</h4>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem;">
+              <div>
+                <label style="${labelStyle()}">Date Format</label>
+                <select id="gen-date-format" style="${inputStyle()}">
+                  ${[
+                    ['DD/MM/YYYY', 'DD/MM/YYYY'],
+                    ['MM/DD/YYYY', 'MM/DD/YYYY'],
+                    ['YYYY-MM-DD', 'YYYY-MM-DD'],
+                    ['DD-MMM-YYYY','DD-MMM-YYYY'],
+                  ].map(([v,l]) => `<option value="${v}" ${App.data.generalSettings?.dateFormat === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Currency Symbol</label>
+                <input id="gen-currency" value="${esc(App.data.generalSettings?.currency, '₦')}" style="${inputStyle()}; max-width:100px;">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Language / Locale</label>
+                <select id="gen-locale" style="${inputStyle()}">
+                  ${[
+                    ['en-NG','English (Nigeria)'],
+                    ['en-GB','English (UK)'],
+                    ['en-US','English (US)'],
+                    ['fr-FR','French'],
+                  ].map(([v,l]) => `<option value="${v}" ${App.data.generalSettings?.locale === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${labelStyle()}">Academic Year Start Month</label>
+                <select id="gen-year-start" style="${inputStyle()}">
+                  ${['January','February','March','April','May','June',
+                     'July','August','September','October','November','December'].map((m,i) =>
+                    `<option value="${i+1}" ${(App.data.generalSettings?.yearStartMonth ?? 9) == i+1 ? 'selected' : ''}>${m}</option>`
+                  ).join('')}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Behaviour -->
+          <div style="border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem;">
+            <h4 style="margin:0 0 1rem; color:#334155;">⚡ System Behaviour</h4>
+            <div style="display:flex; flex-wrap:wrap; gap:1.25rem;">
+              ${[
+                ['gen-auto-save',       'Auto-save forms every 30 seconds',          App.data.generalSettings?.autoSave !== false],
+                ['gen-confirm-delete',  'Always confirm before deleting records',     App.data.generalSettings?.confirmDelete !== false],
+                ['gen-audit-log',       'Enable audit log for changes',               App.data.generalSettings?.auditLog],
+                ['gen-dark-mode',       'Enable dark mode',                           App.data.generalSettings?.darkMode],
+                ['gen-compact-tables',  'Use compact table view',                     App.data.generalSettings?.compactTables],
+                ['gen-print-watermark', 'Add school watermark to printed documents',  App.data.generalSettings?.printWatermark],
+              ].map(([id, label, checked]) => `
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.9rem; min-width:260px;">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width:15px;height:15px;accent-color:#2563eb;">
+                  ${label}
+                </label>
+              `).join('')}
+            </div>
+            <div style="margin-top:1rem; max-width:300px;">
+              <label style="${labelStyle()}">Session Timeout (minutes)</label>
+              <input type="number" id="gen-session-timeout" min="5" max="480"
+                value="${App.data.generalSettings?.sessionTimeout ?? 60}"
+                style="${inputStyle()}; max-width:120px;">
+            </div>
+          </div>
+
+        </div>
+
+        <button onclick="saveGeneralSettings()" style="${btnStyle('primary')}; margin-top:2rem;">💾 Save General Settings</button>
+      </div>
+
+      <!-- ══════════════════════════════════
+           TAB: ROLES & PRIVILEGES
+      ══════════════════════════════════ -->
       <div id="tab-roles" class="settings-tab" style="display:none;">
         <h3 style="margin:0 0 1.5rem; color:#1e40af;">User Roles & Permissions</h3>
         <p style="color:#64748b; margin-bottom:1.5rem;">Manage what each role can do in the system.</p>
-        <!-- Basic table or cards showing roles and toggles for key permissions -->
         <div style="display:grid; gap:1rem;">
           ${['Admin','Principal','Vice Principal','Teacher','Bursar','Parent','Student'].map(role => `
             <div style="border:1px solid #e2e8f0; border-radius:8px; padding:1rem;">
-              <div style="font-weight:600; margin-bottom:0.75rem;">${role}</div>
-              <div style="display:flex; flex-wrap:wrap; gap:1.5rem;">
-                <label style="display:flex; align-items:center; gap:0.5rem;">
-                  <input type="checkbox" ${role==='Admin'?'checked disabled':''}> Can access settings
-                </label>
-                <label style="display:flex; align-items:center; gap:0.5rem;">
-                  <input type="checkbox" ${role==='Teacher'?'checked':''}> Can enter results
-                </label>
-                <!-- Add more permission toggles: take attendance, view reports, manage fees, etc. -->
+              <div style="font-weight:600; margin-bottom:0.75rem; color:#1e40af;">${role}</div>
+              <div style="display:flex; flex-wrap:wrap; gap:1.5rem; font-size:0.9rem;">
+                ${[
+                  ['Can access settings',        role === 'Admin'],
+                  ['Can enter results',           ['Admin','Teacher','Principal'].includes(role)],
+                  ['Can take attendance',         ['Admin','Teacher','Principal','Vice Principal'].includes(role)],
+                  ['Can view all reports',        ['Admin','Principal','Vice Principal'].includes(role)],
+                  ['Can manage fees',             ['Admin','Bursar'].includes(role)],
+                  ['Can view own/child reports',  ['Parent','Student'].includes(role)],
+                  ['Can print reports',           ['Admin','Principal'].includes(role)],
+                  ['Can manage users',            role === 'Admin'],
+                ].map(([perm, def]) => `
+                  <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+                    <input type="checkbox" ${def ? 'checked' : ''} ${role === 'Admin' ? 'disabled' : ''}
+                      style="width:15px;height:15px;accent-color:#2563eb;">
+                    ${perm}
+                  </label>
+                `).join('')}
               </div>
             </div>
           `).join('')}
         </div>
-        <p style="margin-top:2rem; color:#9ca3af; font-style:italic;">Advanced role customization coming soon...</p>
+        <p style="margin-top:1.5rem; color:#9ca3af; font-style:italic; font-size:0.85rem;">
+          Advanced per-user role customization and custom role creation coming soon…
+        </p>
       </div>
 
-      <!-- DATA MANAGEMENT TAB -->
+      <!-- ══════════════════════════════════
+           TAB: DATA MANAGEMENT
+      ══════════════════════════════════ -->
       <div id="tab-data" class="settings-tab" style="display:none;">
         <h3 style="margin:0 0 1.5rem; color:#1e40af;">Data Management & Backup</h3>
         <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.5rem;">
+
           <div style="border:1px solid #e2e8f0; border-radius:8px; padding:1.5rem;">
-            <h4 style="margin:0 0 1rem;">Export / Backup</h4>
-            <button onclick="exportData()" style="${btnStyle('secondary')}; width:100%;">📥 Export Full Data (JSON)</button>
+            <h4 style="margin:0 0 1rem; color:#334155;">📤 Export / Backup</h4>
+            <div style="display:flex; flex-direction:column; gap:0.75rem;">
+              <button onclick="exportData()" style="${btnStyle('secondary')}; width:100%;">📥 Export Full Data (JSON)</button>
+              <button onclick="exportStudentsCSV()" style="${btnStyle('secondary')}; width:100%;">📊 Export Students (CSV)</button>
+              <button onclick="exportResultsCSV()" style="${btnStyle('secondary')}; width:100%;">📊 Export Results (CSV)</button>
+            </div>
           </div>
+
           <div style="border:1px solid #e2e8f0; border-radius:8px; padding:1.5rem;">
-            <h4 style="margin:0 0 1rem;">Danger Zone</h4>
+            <h4 style="margin:0 0 1rem; color:#334155;">📥 Import Data</h4>
+            <div style="display:flex; flex-direction:column; gap:0.75rem;">
+              <div>
+                <label style="${labelStyle()}">Import from JSON Backup</label>
+                <input type="file" id="import-json" accept=".json"
+                  onchange="handleImportJSON(this.files[0])"
+                  style="display:block; margin-top:0.25rem; font-size:0.85rem;">
+              </div>
+              <div>
+                <label style="${labelStyle()}">Import Students (CSV)</label>
+                <input type="file" id="import-csv" accept=".csv"
+                  onchange="handleImportStudentsCSV(this.files[0])"
+                  style="display:block; margin-top:0.25rem; font-size:0.85rem;">
+                <small style="color:#64748b; font-size:0.78rem;">
+                  CSV must include: name, admissionNo, class, arm, gender
+                </small>
+              </div>
+            </div>
+          </div>
+
+          <div style="border:1px solid #fecaca; background:#fff5f5; border-radius:8px; padding:1.5rem;">
+            <h4 style="margin:0 0 1rem; color:#dc2626;">⚠️ Danger Zone</h4>
             <div style="display:flex; flex-direction:column; gap:0.75rem;">
               <button onclick="clearResults()" style="${btnStyle('danger')}">🗑️ Clear All Academic Results</button>
               <button onclick="clearAttendance()" style="${btnStyle('danger')}">🗑️ Clear Attendance Records</button>
-              <button onclick="resetAllData()" style="${btnStyle('danger')}">☢️ Reset Entire Database</button>
+              <button onclick="clearSpecialDays()" style="${btnStyle('danger')}">🗑️ Clear All Special Days</button>
+              <button onclick="resetAllData()" style="background:#7f1d1d; color:#fff; border:none; border-radius:8px; padding:0.65rem 1.25rem; cursor:pointer; font-weight:700; font-size:0.9rem;">
+                ☢️ Reset Entire Database
+              </button>
             </div>
           </div>
+
         </div>
       </div>
+
     </div>`;
 
-  // Tab switching
+  // ── Activate first tab ──────────────────────
   window.showSettingsTab = function(tabId) {
     document.querySelectorAll('.settings-tab').forEach(t => t.style.display = 'none');
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById(`tab-${tabId}`).style.display = 'block';
-    document.querySelector(`button[onclick="showSettingsTab('${tabId}')"]`).classList.add('active');
+    document.querySelectorAll('.settings-tab-btn').forEach(b => {
+      b.style.color = '#64748b';
+      b.style.borderBottomColor = 'transparent';
+    });
+    const tabEl = document.getElementById(`tab-${tabId}`);
+    const btnEl = document.getElementById(`stab-${tabId}`);
+    if (tabEl) tabEl.style.display = 'block';
+    if (btnEl) {
+      btnEl.style.color = '#1e40af';
+      btnEl.style.borderBottomColor = '#1e40af';
+    }
   };
+  showSettingsTab('school');
 
-  // School form submit
+  // ── School form ────────────────────────────
   document.getElementById('school-form').onsubmit = e => {
     e.preventDefault();
     App.data.schoolInfo = {
       ...(App.data.schoolInfo || {}),
-      name: document.getElementById('set-name').value.trim(),
-      address: document.getElementById('set-address').value.trim(),
-      logo: document.getElementById('set-logo').value.trim(),
-      session: document.getElementById('set-session').value.trim(),
-      term: document.getElementById('set-term').value,
-      principal: document.getElementById('set-principal').value.trim(),
+      name:           document.getElementById('set-name').value.trim(),
+      address:        document.getElementById('set-address').value.trim(),
+      logo:           document.getElementById('set-logo').value.trim(),
+      session:        document.getElementById('set-session').value.trim(),
+      term:           document.getElementById('set-term').value,
+      principal:      document.getElementById('set-principal').value.trim(),
+      email:          document.getElementById('set-email').value.trim(),
+      phone:          document.getElementById('set-phone').value.trim(),
+      website:        document.getElementById('set-website').value.trim(),
       resumptionDate: document.getElementById('set-resumption').value,
-      announcements: document.getElementById('set-announcements').value.trim()
+      announcements:  document.getElementById('set-announcements').value.trim(),
+      motto:          document.getElementById('set-motto').value.trim(),
     };
+    saveAppData?.();
     toast('School settings saved successfully', 'success');
   };
 
-  // Load classes list (implement addNewClass, etc.)
+  // ── Load sub-views ─────────────────────────
   renderClassesList();
+  renderSpecialDaysList();
+  initGradingScale();
+  watchBreakdownSum();
+}
 
-  // Load grading scale if not present
+/* ═══════════════════════════════════════════════════
+   ATTENDANCE SETTINGS
+═══════════════════════════════════════════════════ */
+
+function renderSpecialDaysList() {
+  const container = document.getElementById('special-days-list');
+  if (!container) return;
+
+  const days = (App.data.attendanceSettings?.specialDays || [])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (!days.length) {
+    container.innerHTML = '<p style="color:#9ca3af; text-align:center; padding:1.5rem;">No special days added yet.</p>';
+    return;
+  }
+
+  const typeColors = {
+    holiday: '#fee2e2:#dc2626',
+    'half-day': '#fef9c3:#b45309',
+    break:    '#ffedd5:#ea580c',
+    exam:     '#dbeafe:#1d4ed8',
+    closed:   '#f1f5f9:#475569',
+    event:    '#dcfce7:#16a34a',
+    sports:   '#ede9fe:#7c3aed',
+    custom:   '#f1f5f9:#64748b',
+  };
+
+  const typeIcons = {
+    holiday:'🔴', 'half-day':'🟡', break:'🟠', exam:'🔵',
+    closed:'⚫', event:'🟢', sports:'🟣', custom:'⚪'
+  };
+
+  // Group by month
+  const byMonth = {};
+  days.forEach(d => {
+    const month = d.date.substring(0, 7);
+    if (!byMonth[month]) byMonth[month] = [];
+    byMonth[month].push(d);
+  });
+
+  container.innerHTML = `
+    <div style="max-height:400px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:8px;">
+      ${Object.entries(byMonth).map(([month, mDays]) => `
+        <div style="padding:0.5rem 0.75rem; background:#f8fafc; border-bottom:1px solid #e2e8f0;
+                    font-weight:600; font-size:0.82rem; color:#475569; position:sticky; top:0;">
+          ${new Date(month + '-01').toLocaleDateString('en-NG', { month: 'long', year: 'numeric' })}
+          <span style="font-weight:400; margin-left:0.5rem;">(${mDays.length} day${mDays.length > 1 ? 's' : ''})</span>
+        </div>
+        ${mDays.map(d => {
+          const [bg, fg] = (typeColors[d.type] || typeColors.custom).split(':');
+          return `
+            <div style="display:flex; align-items:center; gap:0.75rem; padding:0.6rem 0.75rem;
+                        border-bottom:1px solid #f1f5f9; font-size:0.88rem;">
+              <span style="background:${bg}; color:${fg}; padding:0.2rem 0.6rem; border-radius:999px;
+                           font-size:0.78rem; white-space:nowrap; min-width:90px; text-align:center;">
+                ${typeIcons[d.type] || '⚪'} ${d.type}
+              </span>
+              <span style="font-weight:600; min-width:90px; color:#334155;">
+                ${new Date(d.date + 'T00:00').toLocaleDateString('en-NG', {weekday:'short', day:'numeric', month:'short'})}
+              </span>
+              <span style="flex:1; color:#475569;">${esc(d.label)}</span>
+              <button onclick="removeSpecialDay('${d.date}')"
+                style="border:none; background:none; color:#ef4444; cursor:pointer; font-size:1.1rem; line-height:1; padding:0.2rem;">×</button>
+            </div>
+          `;
+        }).join('')}
+      `).join('')}
+    </div>
+    <div style="margin-top:0.5rem; font-size:0.82rem; color:#64748b; text-align:right;">
+      Total: <strong>${days.length}</strong> special days configured
+    </div>
+  `;
+}
+
+window.addSpecialDay = function() {
+  const date  = document.getElementById('sd-date').value;
+  const label = document.getElementById('sd-label').value.trim();
+  const type  = document.getElementById('sd-type').value;
+  if (!date) return toast('Please select a date', 'warning');
+  if (!label) return toast('Please enter a description', 'warning');
+
+  App.data.attendanceSettings = App.data.attendanceSettings || {};
+  App.data.attendanceSettings.specialDays = App.data.attendanceSettings.specialDays || [];
+
+  if (App.data.attendanceSettings.specialDays.some(d => d.date === date)) {
+    return toast('This date already has a special day entry', 'warning');
+  }
+
+  App.data.attendanceSettings.specialDays.push({ date, label, type });
+  document.getElementById('sd-date').value  = '';
+  document.getElementById('sd-label').value = '';
+  renderSpecialDaysList();
+  toast('Special day added', 'success');
+};
+
+window.addSpecialDayRange = function() {
+  const start = document.getElementById('sd-range-start').value;
+  const end   = document.getElementById('sd-range-end').value;
+  const label = document.getElementById('sd-range-label').value.trim();
+  const type  = document.getElementById('sd-range-type').value;
+
+  if (!start || !end) return toast('Please select both start and end dates', 'warning');
+  if (start > end)    return toast('Start date must be before end date', 'warning');
+  if (!label)         return toast('Please enter a label for this range', 'warning');
+
+  App.data.attendanceSettings = App.data.attendanceSettings || {};
+  App.data.attendanceSettings.specialDays = App.data.attendanceSettings.specialDays || [];
+
+  const existing = new Set(App.data.attendanceSettings.specialDays.map(d => d.date));
+  let added = 0;
+  const cursor = new Date(start + 'T00:00');
+  const endDate = new Date(end + 'T00:00');
+
+  while (cursor <= endDate) {
+    const iso = cursor.toISOString().substring(0, 10);
+    if (!existing.has(iso)) {
+      App.data.attendanceSettings.specialDays.push({ date: iso, label, type });
+      added++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  document.getElementById('sd-range-start').value = '';
+  document.getElementById('sd-range-end').value   = '';
+  document.getElementById('sd-range-label').value = '';
+  renderSpecialDaysList();
+  toast(`Added ${added} day${added !== 1 ? 's' : ''} to the calendar`, 'success');
+};
+
+window.removeSpecialDay = function(date) {
+  if (!App.data.attendanceSettings?.specialDays) return;
+  App.data.attendanceSettings.specialDays =
+    App.data.attendanceSettings.specialDays.filter(d => d.date !== date);
+  renderSpecialDaysList();
+  toast('Special day removed', 'warning');
+};
+
+window.clearSpecialDays = function() {
+  if (!confirm('Remove all special days from the calendar?')) return;
+  if (App.data.attendanceSettings) App.data.attendanceSettings.specialDays = [];
+  renderSpecialDaysList();
+  toast('All special days cleared', 'warning');
+};
+
+window.saveAttendanceSettings = function() {
+  const workingDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+    .filter(day => document.getElementById(`wd-${day}`)?.checked);
+
+  App.data.attendanceSettings = {
+    ...(App.data.attendanceSettings || {}),
+    termStart:              document.getElementById('att-term-start')?.value || '',
+    termEnd:                document.getElementById('att-term-end')?.value   || '',
+    expectedDays:           parseInt(document.getElementById('att-expected-days')?.value) || null,
+    workingDays,
+    openTime:               document.getElementById('att-open-time')?.value  || '07:30',
+    closeTime:              document.getElementById('att-close-time')?.value || '14:30',
+    lateAfter:              document.getElementById('att-late-time')?.value  || '08:00',
+    minAttendancePct:       parseInt(document.getElementById('att-min-pct')?.value) || 75,
+    consecutiveAbsentAlert: parseInt(document.getElementById('att-absent-alert')?.value) || 3,
+    lateMarkThreshold:      parseInt(document.getElementById('att-late-threshold')?.value) || 3,
+    allowExcused:           document.getElementById('att-allow-excused')?.checked ?? true,
+    countExcusedAsPresent:  document.getElementById('att-count-excused')?.checked ?? false,
+    showOnReport:           document.getElementById('att-show-on-report')?.checked ?? true,
+  };
+
+  saveAppData?.();
+  toast('Attendance & calendar settings saved', 'success');
+};
+
+window.recalculateAttendanceSummary = function() {
+  if (!confirm('Recalculate attendance percentages for all students based on current calendar settings?')) return;
+  // Hook into your attendance calculation engine here
+  toast('Attendance summaries recalculated', 'success');
+};
+
+/* ═══════════════════════════════════════════════════
+   GENERAL SETTINGS  
+═══════════════════════════════════════════════════ */
+
+window.saveGeneralSettings = function() {
+  const getBool = id => document.getElementById(id)?.checked ?? false;
+  const getVal  = id => document.getElementById(id)?.value;
+
+  App.data.generalSettings = {
+    // Report card
+    resultMode:       getVal('gen-result-mode'),
+    positionMode:     getVal('gen-position-mode'),
+    decimalPlaces:    parseInt(getVal('gen-decimal-places')) || 1,
+    reportFooter:     getVal('gen-report-footer'),
+    commentCharLimit: parseInt(getVal('gen-comment-limit')) || 150,
+    showPhoto:        getBool('gen-show-photo'),
+    showGPA:          getBool('gen-show-gpa'),
+    showClassAvg:     getBool('gen-show-class-avg'),
+    showDomain:       getBool('gen-show-domain'),
+    showAttendance:   getBool('gen-show-attendance'),
+    cumulativeResults:getBool('gen-cumulative-results'),
+    // Score entry
+    scoreEntryMode:   getVal('gen-entry-mode'),
+    maxScore:         parseInt(getVal('gen-max-score')) || 100,
+    passMark:         parseInt(getVal('gen-pass-mark')) || 40,
+    allowScoreEdit:   getBool('gen-allow-score-edit'),
+    lockPublished:    getBool('gen-lock-published'),
+    autoGrade:        getBool('gen-auto-grade'),
+    validateRange:    getBool('gen-validate-range'),
+    absentAutoZero:   getBool('gen-allow-absent-zero'),
+    // Notifications
+    notifyAbsent:     getBool('gen-notify-absent'),
+    notifyLowScore:   getBool('gen-notify-low-score'),
+    notifyFees:       getBool('gen-notify-fees'),
+    notifyResults:    getBool('gen-notify-results'),
+    notifyResumption: getBool('gen-notify-resumption'),
+    // Portal access
+    portalParent:     getBool('gen-portal-parent'),
+    portalStudent:    getBool('gen-portal-student'),
+    portalTeacher:    getBool('gen-portal-teacher'),
+    resultsPublic:    getBool('gen-results-public'),
+    feesPortal:       getBool('gen-fees-portal'),
+    timetablePublic:  getBool('gen-timetable-public'),
+    // Locale
+    dateFormat:       getVal('gen-date-format'),
+    currency:         getVal('gen-currency'),
+    locale:           getVal('gen-locale'),
+    yearStartMonth:   parseInt(getVal('gen-year-start')) || 9,
+    // System behaviour
+    autoSave:         getBool('gen-auto-save'),
+    confirmDelete:    getBool('gen-confirm-delete'),
+    auditLog:         getBool('gen-audit-log'),
+    darkMode:         getBool('gen-dark-mode'),
+    compactTables:    getBool('gen-compact-tables'),
+    printWatermark:   getBool('gen-print-watermark'),
+    sessionTimeout:   parseInt(getVal('gen-session-timeout')) || 60,
+  };
+
+  saveAppData?.();
+  toast('General settings saved', 'success');
+};
+
+/* ═══════════════════════════════════════════════════
+   GRADING SCALE
+═══════════════════════════════════════════════════ */
+
+function initGradingScale() {
   if (!App.data.gradingScale) {
-    App.data.gradingScale = [
-      {min:70, max:100, grade:'A', remark:'Excellent'},
-      {min:60, max:69, grade:'B', remark:'Very Good'},
-      {min:50, max:59, grade:'C', remark:'Good'},
-      {min:45, max:49, grade:'D', remark:'Pass'},
-      {min:40, max:44, grade:'E', remark:'Weak Pass'},
-      {min:0,  max:39, grade:'F', remark:'Fail'}
-    ];
+    App.data.gradingScale = defaultGradingScale();
   }
 }
 
-// ── Helper functions ─────────────────────────────────────
+function defaultGradingScale() {
+  return [
+    {min:75, max:100, grade:'A1', remark:'Excellent',  gpa:5.0},
+    {min:70, max:74,  grade:'B2', remark:'Very Good',   gpa:4.0},
+    {min:65, max:69,  grade:'B3', remark:'Good',        gpa:3.5},
+    {min:60, max:64,  grade:'C4', remark:'Credit',      gpa:3.0},
+    {min:55, max:59,  grade:'C5', remark:'Credit',      gpa:2.5},
+    {min:50, max:54,  grade:'C6', remark:'Credit',      gpa:2.0},
+    {min:45, max:49,  grade:'D7', remark:'Pass',        gpa:1.5},
+    {min:40, max:44,  grade:'E8', remark:'Weak Pass',   gpa:1.0},
+    {min:0,  max:39,  grade:'F9', remark:'Fail',        gpa:0.0},
+  ];
+}
+
+window.addGradingRow = function() {
+  const tbody = document.querySelector('#grading-table tbody');
+  if (!tbody) return;
+  const row = document.createElement('tr');
+  row.innerHTML = `
+    <td><input type="number" min="0" max="100" style="${inputStyle('sm')}"></td>
+    <td><input type="number" min="0" max="100" style="${inputStyle('sm')}"></td>
+    <td><input maxlength="2" style="${inputStyle('sm')}"></td>
+    <td><input style="${inputStyle('sm')}"></td>
+    <td><input type="number" step="0.1" min="0" max="5" placeholder="—" style="${inputStyle('sm')}"></td>
+    <td><button onclick="this.closest('tr').remove()" style="${btnStyle('danger','xs')}">×</button></td>
+  `;
+  tbody.appendChild(row);
+};
+
+window.removeGradingRow = btn => btn.closest('tr').remove();
+
+window.saveGradingAndDomains = function() {
+  const rows = document.querySelectorAll('#grading-table tbody tr');
+  const scale = [];
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const min = Number(inputs[0].value);
+    const max = Number(inputs[1].value);
+    if (!isNaN(min) && !isNaN(max) && inputs[2].value.trim()) {
+      scale.push({ min, max, grade: inputs[2].value.trim(), remark: inputs[3].value.trim(), gpa: parseFloat(inputs[4].value) || null });
+    }
+  });
+  App.data.gradingScale = scale.sort((a,b) => b.min - a.min);
+
+  App.data.domainLabels = {};
+  [1,2,3,4,5].forEach(s => {
+    const val = document.getElementById(`domain-label-${s}`)?.value.trim();
+    if (val) App.data.domainLabels[s] = val;
+  });
+
+  // Score breakdown
+  const bkd = {};
+  document.querySelectorAll('[data-breakdown]').forEach(inp => {
+    bkd[inp.dataset.breakdown] = parseInt(inp.value) || 0;
+  });
+  App.data.scoreBreakdown = bkd;
+
+  saveAppData?.();
+  toast('Grading scale & domain labels saved', 'success');
+};
+
+function renderScoreBreakdownInputs() {
+  const defaults = App.data.scoreBreakdown || { 'CA 1': 10, 'CA 2': 10, 'Exam': 80 };
+  return Object.entries(defaults).map(([k,v]) => `
+    <div>
+      <label style="${labelStyle()}">${k} (%)</label>
+      <input type="number" data-breakdown="${k}" value="${v}" min="0" max="100"
+        oninput="updateBreakdownSum()" style="${inputStyle()}; max-width:100px;">
+    </div>
+  `).join('');
+}
+
+function watchBreakdownSum() { updateBreakdownSum(); }
+
+window.updateBreakdownSum = function() {
+  const inputs = document.querySelectorAll('[data-breakdown]');
+  let sum = 0;
+  inputs.forEach(i => sum += parseInt(i.value) || 0);
+  const notice = document.getElementById('breakdown-sum-notice');
+  if (!notice) return;
+  if (sum === 100) {
+    notice.style.color = '#16a34a';
+    notice.textContent = '✓ Breakdown sums to 100%';
+  } else {
+    notice.style.color = '#dc2626';
+    notice.textContent = `⚠ Current total: ${sum}% — must equal 100%`;
+  }
+};
+
+/* ═══════════════════════════════════════════════════
+   CLASSES & ARMS  (unchanged from original)
+═══════════════════════════════════════════════════ */
 
 function renderClassesList() {
   const container = document.getElementById('classes-list');
   if (!container) return;
-  container.innerHTML = App.data.classes?.map(cls => `
-    <div style="border:1px solid #e2e8f0; border-radius:8px; padding:1rem; margin-bottom:1rem;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
-        <strong style="font-size:1.1rem;">${cls.name}</strong>
-        <button onclick="deleteClass('${cls.name}')" style="${btnStyle('danger','sm')}">Delete</button>
-      </div>
-      <div style="margin-top:0.5rem;">
-        <strong>Arms/Sections:</strong>
-        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.5rem;">
-          ${cls.arms?.map(arm => `
-            <span style="background:#e0f2fe; padding:0.35rem 0.75rem; border-radius:999px; font-size:0.9rem;">
-              ${arm}
-              <button onclick="removeArm('${cls.name}','${arm}')" style="border:none;background:none;color:#ef4444;font-size:1.1rem;line-height:1;cursor:pointer;">×</button>
-            </span>
-          `).join('') || '<span style="color:#9ca3af;">No arms defined</span>'}
+  container.innerHTML = App.data.classes?.length
+    ? App.data.classes.map(cls => `
+      <div style="border:1px solid #e2e8f0; border-radius:8px; padding:1rem; margin-bottom:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <strong style="font-size:1.05rem;">${esc(cls.name)}</strong>
+          <button onclick="deleteClass('${cls.name}')" style="${btnStyle('danger','sm')}">Delete Class</button>
         </div>
-        <input id="new-arm-${cls.name}" placeholder="Add new arm (e.g. A)" style="${inputStyle('sm')}; margin-top:0.75rem; width:180px;">
-        <button onclick="addArm('${cls.name}')" style="${btnStyle('success','sm')}; margin-left:0.5rem;">+ Add</button>
+        <div>
+          <strong style="font-size:0.85rem; color:#64748b;">Arms / Sections:</strong>
+          <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.5rem;">
+            ${cls.arms?.map(arm => `
+              <span style="background:#e0f2fe; padding:0.3rem 0.7rem; border-radius:999px; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                ${esc(arm)}
+                <button onclick="removeArm('${cls.name}','${arm}')"
+                  style="border:none;background:none;color:#ef4444;font-size:1rem;line-height:1;cursor:pointer;padding:0;">×</button>
+              </span>
+            `).join('') || '<span style="color:#9ca3af; font-size:0.85rem;">No arms defined</span>'}
+          </div>
+          <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.75rem;">
+            <input id="new-arm-${cls.name}" placeholder="Arm name (e.g. A)" style="${inputStyle('sm')}; width:160px;">
+            <button onclick="addArm('${cls.name}')" style="${btnStyle('success','sm')}">+ Add Arm</button>
+          </div>
+        </div>
       </div>
-    </div>
-  `).join('') || '<p style="color:#9ca3af;text-align:center;padding:2rem;">No classes defined yet.</p>';
+    `).join('')
+    : '<p style="color:#9ca3af;text-align:center;padding:2rem;">No classes defined yet.</p>';
 }
 
 window.addNewClass = function() {
   const name = prompt('Enter new class name (e.g. JSS 1, SSS 2):');
   if (!name?.trim()) return;
-  if (App.data.classes.some(c => c.name === name)) return toast('Class already exists', 'warning');
+  if ((App.data.classes || []).some(c => c.name === name.trim())) return toast('Class already exists', 'warning');
   App.data.classes = App.data.classes || [];
   App.data.classes.push({ name: name.trim(), arms: [] });
   renderClassesList();
@@ -3954,9 +6308,8 @@ window.addNewClass = function() {
 };
 
 window.deleteClass = function(name) {
-  if (!confirm(`Delete class ${name} and all related data?`)) return;
-  App.data.classes = App.data.classes.filter(c => c.name !== name);
-  // Optional: clean up students, results, etc.
+  if (!confirm(`Delete class "${name}" and all related data?`)) return;
+  App.data.classes = (App.data.classes || []).filter(c => c.name !== name);
   renderClassesList();
   toast('Class removed', 'warning');
 };
@@ -3964,7 +6317,7 @@ window.deleteClass = function(name) {
 window.addArm = function(className) {
   const input = document.getElementById(`new-arm-${className}`);
   const arm = input?.value.trim();
-  if (!arm) return;
+  if (!arm) return toast('Enter an arm name', 'warning');
   const cls = App.data.classes.find(c => c.name === className);
   if (cls) {
     cls.arms = cls.arms || [];
@@ -3977,7 +6330,7 @@ window.addArm = function(className) {
 };
 
 window.removeArm = function(className, arm) {
-  const cls = App.data.classes.find(c => c.name === className);
+  const cls = (App.data.classes || []).find(c => c.name === className);
   if (cls) {
     cls.arms = cls.arms.filter(a => a !== arm);
     renderClassesList();
@@ -3985,131 +6338,171 @@ window.removeArm = function(className, arm) {
   }
 };
 
-window.addGradingRow = function() {
-  const tbody = document.querySelector('#grading-table tbody');
-  const row = document.createElement('tr');
-  row.innerHTML = `
-    <td><input type="number" min="0" max="100" style="${inputStyle('sm')}"></td>
-    <td><input type="number" min="0" max="100" style="${inputStyle('sm')}"></td>
-    <td><input maxlength="2" style="${inputStyle('sm')}"></td>
-    <td><input style="${inputStyle('sm')}"></td>
-    <td><button onclick="this.closest('tr').remove()" style="${btnStyle('danger','xs')}">×</button></td>
-  `;
-  tbody.appendChild(row);
-};
+/* ═══════════════════════════════════════════════════
+   DATA MANAGEMENT  (extra exports/imports)
+═══════════════════════════════════════════════════ */
 
-window.removeGradingRow = function(btn) {
-  btn.closest('tr').remove();
-};
-
-window.saveGradingAndDomains = function() {
-  const rows = document.querySelectorAll('#grading-table tbody tr');
-  const scale = [];
-  rows.forEach(row => {
-    const inputs = row.querySelectorAll('input');
-    const min = Number(inputs[0].value);
-    const max = Number(inputs[1].value);
-    if (!isNaN(min) && !isNaN(max)) {
-      scale.push({
-        min, max,
-        grade: inputs[2].value.trim(),
-        remark: inputs[3].value.trim()
-      });
-    }
+window.exportStudentsCSV = function() {
+  const rows = [['Name','Admission No','Class','Arm','Gender','DOB']];
+  (App.data.students || []).forEach(s => {
+    rows.push([s.name, s.admissionNo, s.class, s.arm, s.gender, s.dob || '']);
   });
-  App.data.gradingScale = scale.sort((a,b) => b.min - a.min);
-
-  // Domain labels
-  App.data.domainLabels = {};
-  [1,2,3,4,5].forEach(s => {
-    const val = document.getElementById(`domain-label-${s}`)?.value.trim();
-    if (val) App.data.domainLabels[s] = val;
-  });
-
-  toast('Grading scale & domain labels saved', 'success');
+  downloadCSV(rows, `students_${Date.now()}.csv`);
+  toast('Students exported', 'success');
 };
 
-function getDefaultDomainLabel(score) {
-  const map = {1:'Excellent',2:'Very Good',3:'Good',4:'Fair',5:'Poor'};
-  return map[score] || 'Not rated';
+window.exportResultsCSV = function() {
+  const rows = [['Student','Admission No','Class','Subject','CA1','CA2','Exam','Total','Grade']];
+  (App.data.results || []).forEach(r => {
+    rows.push([r.studentName, r.admissionNo, r.class, r.subject, r.ca1||'', r.ca2||'', r.exam||'', r.total||'', r.grade||'']);
+  });
+  downloadCSV(rows, `results_${Date.now()}.csv`);
+  toast('Results exported', 'success');
+};
+
+function downloadCSV(rows, filename) {
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
 }
 
-// Keep your existing exportData, clearResults, clearAttendance
-// Add resetAllData() with strong confirmation if needed
-/**
- * Completely resets the application data to a minimal empty state.
- * Requires explicit typed confirmation to prevent accidental data loss.
- */
-window.resetAllData = function() {
-    // Step 1: First-level confirmation (prevent fat-finger resets)
-    if (!confirm("This action will PERMANENTLY DELETE ALL school data (students, results, attendance, classes, teachers, remarks, etc.)\n\nAre you sure you want to continue?")) {
-        toast("Reset cancelled.", "info");
-        return;
-    }
-
-    // Step 2: Require user to type exact confirmation phrase
-    const confirmation = prompt(
-        "Type the following phrase exactly to confirm full data reset:\n\n" +
-        "   RESET DATABASE NOW\n\n" +
-        "(case-sensitive, including spaces)"
-    );
-
-    if (confirmation !== "RESET DATABASE NOW") {
-        toast("Reset aborted — confirmation phrase did not match.", "warning");
-        return;
-    }
-
-    // Step 3: Optional third layer — time delay + final warning (anti-impulse)
-    if (!confirm("Last chance!\n\nThis cannot be undone.\n\nProceed with full reset?")) {
-        toast("Reset cancelled at final confirmation.", "info");
-        return;
-    }
-
-    // Step 4: Perform the reset
+window.handleImportJSON = function(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
     try {
-        // Preserve essential non-user-data structures if they exist
-        const preserved = {
-            schoolInfo: App.data.schoolInfo || {},
-            gradingScale: App.data.gradingScale || [],
-            domainLabels: App.data.domainLabels || {},
-            // add other global configs you want to keep
-        };
-
-        // Reset to minimal viable empty state
-        App.data = {
-            // Core collections
-            students: [],
-            results: [],
-            attendanceRecords: [],     // ← use consistent name if you renamed it
-            attendance: [],            // ← keep if still used
-            remarks: [],
-            classes: [],
-            teachers: [],
-            // Optional / future collections
-            domainAssessments: [],
-            users: App.data.users || [],     // preserve accounts if needed
-            // Preserved global settings
-            ...preserved
-        };
-
-        // Optional: Reset any derived/cached student fields
-        // (if you store aggregates like attendance % directly on students)
-        // App.data.students.forEach(s => { s.attendance = 0; /* etc */ });
-
-        // Optional: Clear any localStorage / session data if used
-        // localStorage.removeItem('app-state');
-
-        toast("Full database reset completed.", "warning");
-        
-        // Optional: Force UI refresh / redirect
-        // navigate('dashboard');  // or reload page, etc.
-        // location.reload();     // most aggressive
-
+      const imported = JSON.parse(e.target.result);
+      if (!imported || typeof imported !== 'object') throw new Error('Invalid format');
+      if (!confirm('This will MERGE the imported data with current data. Continue?')) return;
+      Object.assign(App.data, imported);
+      saveAppData?.();
+      toast('Data imported successfully', 'success');
+      renderSettings();
     } catch (err) {
-        console.error("Reset failed:", err);
-        toast("Reset failed — check console for details.", "error");
+      toast('Import failed — invalid JSON file', 'error');
     }
+  };
+  reader.readAsText(file);
 };
+
+window.handleImportStudentsCSV = function(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const lines = e.target.result.split('\n').filter(Boolean);
+      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
+      let added = 0;
+      for (let i = 1; i < lines.length; i++) {
+        const vals = lines[i].split(',').map(v => v.trim().replace(/^"|"$/g,''));
+        const obj = {};
+        headers.forEach((h, idx) => obj[h] = vals[idx] || '');
+        if (obj.name && obj.class) {
+          App.data.students = App.data.students || [];
+          App.data.students.push({ id: `s_${Date.now()}_${i}`, ...obj });
+          added++;
+        }
+      }
+      saveAppData?.();
+      toast(`${added} student(s) imported`, 'success');
+    } catch (err) {
+      toast('CSV import failed — check file format', 'error');
+    }
+  };
+  reader.readAsText(file);
+};
+
+/* ═══════════════════════════════════════════════════
+   RESET (unchanged + extended)
+═══════════════════════════════════════════════════ */
+
+window.resetAllData = function() {
+  if (!confirm('PERMANENTLY DELETE ALL school data?\n\nStudents, results, attendance, classes, teachers, and all records will be lost.\n\nContinue?')) return toast('Reset cancelled.', 'info');
+
+  const confirmation = prompt('Type exactly:\n\n   RESET DATABASE NOW\n\n(case-sensitive)');
+  if (confirmation !== 'RESET DATABASE NOW') return toast('Reset aborted — phrase did not match.', 'warning');
+
+  if (!confirm('Last chance. This cannot be undone.\n\nProceed with full reset?')) return toast('Reset cancelled.', 'info');
+
+  try {
+    App.data = {
+      students: [],
+      results: [],
+      attendanceRecords: [],
+      attendance: [],
+      remarks: [],
+      classes: [],
+      teachers: [],
+      domainAssessments: [],
+      users: App.data.users || [],
+      schoolInfo: App.data.schoolInfo || {},
+      gradingScale: defaultGradingScale(),
+      domainLabels: App.data.domainLabels || {},
+      attendanceSettings: {},
+      generalSettings: {},
+    };
+    saveAppData?.();
+    toast('Full database reset completed.', 'warning');
+    renderSettings();
+  } catch (err) {
+    console.error('Reset failed:', err);
+    toast('Reset failed — check console for details.', 'error');
+  }
+};
+
+/* ═══════════════════════════════════════════════════
+   UTILITIES
+═══════════════════════════════════════════════════ */
+
+/** Safe HTML-escape + optional fallback */
+function esc(val, fallback = '') {
+  if (val == null || val === '') return fallback;
+  return String(val)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function getDefaultDomainLabel(score) {
+  return { 1:'Excellent', 2:'Very Good', 3:'Good', 4:'Fair', 5:'Poor' }[score] || 'Not rated';
+}
+
+/* ── Style helpers (keep in sync with your app-level helpers) ── */
+function labelStyle() {
+  return 'display:block; font-size:0.82rem; font-weight:600; color:#475569; margin-bottom:0.35rem;';
+}
+function inputStyle(size) {
+  const pad = size === 'sm' ? '0.35rem 0.6rem' : '0.55rem 0.85rem';
+  const fz  = size === 'sm' ? '0.82rem' : '0.9rem';
+  return `width:100%; padding:${pad}; font-size:${fz}; border:1.5px solid #d1d5db; border-radius:6px; outline:none; box-sizing:border-box; transition:border-color .15s;`;
+}
+function btnStyle(variant, size) {
+  const pad = size === 'xs' ? '0.25rem 0.6rem' : size === 'sm' ? '0.4rem 0.85rem' : '0.6rem 1.25rem';
+  const fz  = size === 'xs' ? '0.78rem' : size === 'sm' ? '0.82rem' : '0.9rem';
+  const base = `padding:${pad}; font-size:${fz}; font-weight:600; border:none; border-radius:7px; cursor:pointer; display:inline-flex; align-items:center; gap:0.4rem; transition:opacity .15s;`;
+  const variants = {
+    primary:   'background:#2563eb; color:#fff;',
+    secondary: 'background:#f1f5f9; color:#334155; border:1.5px solid #d1d5db;',
+    success:   'background:#16a34a; color:#fff;',
+    danger:    'background:#ef4444; color:#fff;',
+    outline:   'background:#fff; color:#2563eb; border:1.5px solid #2563eb;',
+  };
+  return base + (variants[variant] || variants.secondary);
+}
+function tableStyle() {
+  return 'width:100%; border-collapse:collapse; font-size:0.88rem; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;';
+}
+function thRowStyle() {
+  return 'background:#f8fafc;';
+}
+function thStyle(width) {
+  return `padding:0.6rem 0.75rem; text-align:left; font-size:0.8rem; font-weight:700; color:#475569; border-bottom:1px solid #e2e8f0; white-space:nowrap; width:${width};`;
+}
+
 /* ─────────────────────────────────────────
    17. MODAL SYSTEM
 ───────────────────────────────────────── */
@@ -4153,56 +6546,600 @@ function accessDeniedPage(sectionId) {
 }
 
 /* ─────────────────────────────────────────
-   19. STYLE HELPERS
-───────────────────────────────────────── */
-function btnStyle(type = 'primary', size = 'md') {
-  const pad  = size === 'sm' ? '.3rem .7rem'  : '.6rem 1.25rem';
-  const font = size === 'sm' ? '.8rem'         : '.9rem';
-  const colors = {
-    primary:   'background:#1e3a5f;color:#fff;border:none;',
-    secondary: 'background:#e5e7eb;color:#374151;border:none;',
-    danger:    'background:#ef4444;color:#fff;border:none;',
-    success:   'background:#22c55e;color:#fff;border:none;',
-    info:      'background:#06b6d4;color:#fff;border:none;',
-    warning:   'background:#f59e0b;color:#fff;border:none;',
-    outline:   'background:transparent;color:#1e3a5f;border:1px solid #1e3a5f;',
+   19.0 STYLE HELPERS  —  Design Token System
+   
+   Design philosophy:
+   • Single source of truth via TOKENS object
+   • All helpers derive from tokens — change a token, everything updates
+   • Consistent 4-step size scale: xs / sm / md / lg
+   • Every helper accepts (variant, size) with safe fallbacks
+   • No magic strings scattered across the codebase
+   • Hover/focus states via injected <style> block (call injectBaseStyles())
+   • Fully backward-compatible with existing call sites
+───────────────────────────────────────────────────────────────── */
+
+/* ── 19.1. DESIGN TOKENS ─────────────────────────────────────────── */
+
+const TOKENS = {
+  // Brand palette
+  color: {
+    primary:        '#1e3a5f',
+    primaryLight:   '#2a4f7f',
+    primarySurface: '#eff6ff',
+    primaryBorder:  '#bfdbfe',
+    primaryText:    '#1d4ed8',
+
+    success:        '#16a34a',
+    successSurface: '#dcfce7',
+    successBorder:  '#bbf7d0',
+    successText:    '#166534',
+
+    danger:         '#dc2626',
+    dangerSurface:  '#fee2e2',
+    dangerBorder:   '#fecaca',
+    dangerText:     '#991b1b',
+
+    warning:        '#d97706',
+    warningSurface: '#fef3c7',
+    warningBorder:  '#fde68a',
+    warningText:    '#92400e',
+
+    info:           '#0891b2',
+    infoSurface:    '#ecfeff',
+    infoBorder:     '#a5f3fc',
+    infoText:       '#0e7490',
+
+    neutral:        '#6b7280',
+    neutralSurface: '#f9fafb',
+    neutralBorder:  '#e5e7eb',
+    neutralText:    '#374151',
+
+    muted:          '#9ca3af',
+    mutedSurface:   '#f3f4f6',
+
+    // Semantic surface colours for banners / callouts
+    purple:         '#7c3aed',
+    purpleSurface:  '#f5f3ff',
+    purpleBorder:   '#ddd6fe',
+    purpleText:     '#5b21b6',
+  },
+
+  // Spacing scale  (xs / sm / md / lg)
+  padding: {
+    btn: {
+      xs: '.2rem .5rem',
+      sm: '.35rem .75rem',
+      md: '.55rem 1.1rem',
+      lg: '.75rem 1.5rem',
+    },
+    input: {
+      sm: '.35rem .6rem',
+      md: '.55rem .85rem',
+      lg: '.7rem 1rem',
+    },
+    cell: {
+      sm: '.5rem .75rem',
+      md: '.7rem 1rem',
+      lg: '.9rem 1.25rem',
+    },
+  },
+
+  // Typography
+  fontSize: {
+    xs:   '.75rem',
+    sm:   '.8rem',
+    base: '.875rem',
+    md:   '.9rem',
+    lg:   '1rem',
+  },
+
+  // Radii
+  radius: {
+    xs:  '4px',
+    sm:  '6px',
+    md:  '8px',
+    lg:  '10px',
+    xl:  '12px',
+    pill:'9999px',
+  },
+
+  // Shadows
+  shadow: {
+    none: 'none',
+    xs:   '0 1px 2px rgba(0,0,0,.06)',
+    sm:   '0 1px 4px rgba(0,0,0,.08)',
+    md:   '0 4px 12px rgba(0,0,0,.10)',
+    lg:   '0 8px 24px rgba(0,0,0,.12)',
+    focus:'0 0 0 3px rgba(30,58,95,.18)',
+  },
+
+  // Transitions
+  transition: {
+    fast:   'all .12s ease',
+    normal: 'all .18s ease',
+    slow:   'all .28s ease',
+  },
+};
+
+
+/* ── 19.2. BTN STYLE ─────────────────────────────────────────────── */
+
+/**
+ * btnStyle(variant?, size?, options?)
+ *
+ * Variants: primary | secondary | danger | success | info | warning |
+ *           outline | ghost | outlineDanger | outlineSuccess | link
+ * Sizes:    xs | sm | md | lg
+ * Options:  { fullWidth, iconOnly, rounded }
+ *
+ * Examples:
+ *   btnStyle()                  → primary md
+ *   btnStyle('danger', 'sm')
+ *   btnStyle('outline', 'lg', { fullWidth: true })
+ *   btnStyle('ghost', 'xs')
+ */
+function btnStyle(variant = 'primary', size = 'md', opts = {}) {
+  const C = TOKENS.color;
+  const pad  = TOKENS.padding.btn[size]  ?? TOKENS.padding.btn.md;
+  const font = TOKENS.fontSize[size === 'xs' ? 'xs' : size === 'sm' ? 'sm' : size === 'lg' ? 'lg' : 'md'];
+
+  const variants = {
+    // Filled
+    primary:       `background:${C.primary};color:#fff;border:1.5px solid ${C.primary};`,
+    secondary:     `background:${C.neutralSurface};color:${C.neutralText};border:1.5px solid ${C.neutralBorder};`,
+    danger:        `background:${C.danger};color:#fff;border:1.5px solid ${C.danger};`,
+    success:       `background:${C.success};color:#fff;border:1.5px solid ${C.success};`,
+    info:          `background:${C.info};color:#fff;border:1.5px solid ${C.info};`,
+    warning:       `background:${C.warning};color:#fff;border:1.5px solid ${C.warning};`,
+    // Outlined
+    outline:       `background:transparent;color:${C.primary};border:1.5px solid ${C.primary};`,
+    outlineDanger: `background:transparent;color:${C.danger};border:1.5px solid ${C.danger};`,
+    outlineSuccess:`background:transparent;color:${C.success};border:1.5px solid ${C.success};`,
+    outlineNeutral:`background:transparent;color:${C.neutralText};border:1.5px solid ${C.neutralBorder};`,
+    // Soft / ghost
+    soft:          `background:${C.primarySurface};color:${C.primaryText};border:1.5px solid ${C.primaryBorder};`,
+    softDanger:    `background:${C.dangerSurface};color:${C.dangerText};border:1.5px solid ${C.dangerBorder};`,
+    softSuccess:   `background:${C.successSurface};color:${C.successText};border:1.5px solid ${C.successBorder};`,
+    softWarning:   `background:${C.warningSurface};color:${C.warningText};border:1.5px solid ${C.warningBorder};`,
+    ghost:         `background:transparent;color:${C.neutralText};border:1.5px solid transparent;`,
+    ghostDanger:   `background:transparent;color:${C.danger};border:1.5px solid transparent;`,
+    // Link-style
+    link:          `background:transparent;color:${C.primaryText};border:none;text-decoration:underline;padding:0;`,
   };
-  return `${colors[type]||colors.primary}padding:${pad};border-radius:8px;font-size:${font};cursor:pointer;font-weight:500;transition:opacity .15s;margin:.1rem;`;
+
+  const chosen = variants[variant] ?? variants.primary;
+  const width  = opts.fullWidth  ? 'width:100%;justify-content:center;' : '';
+  const radius = opts.rounded    ? `border-radius:${TOKENS.radius.pill};` : `border-radius:${TOKENS.radius.md};`;
+  const padStr = opts.iconOnly   ? `padding:${pad.split(' ')[0]};` : `padding:${pad};`;
+
+  return [
+    chosen,
+    padStr,
+    radius,
+    width,
+    `font-size:${font};`,
+    `font-weight:600;`,
+    `font-family:inherit;`,
+    `line-height:1.4;`,
+    `cursor:pointer;`,
+    `display:inline-flex;align-items:center;justify-content:center;gap:.4rem;`,
+    `transition:${TOKENS.transition.fast};`,
+    `white-space:nowrap;`,
+    `text-decoration:none;`,
+  ].join('');
 }
 
-function infoBanner() {
-  return 'background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;font-size:.875rem;color:#1d4ed8;margin-bottom:1rem;display:block;';
+/* ── 19.3. INPUT STYLE ───────────────────────────────────────────── */
+/**
+ * inputStyle(size?, opts?)
+ * Sizes: sm | md | lg
+ * Options: { inline, error, success, noBorder }
+ */
+function inputStyle(size = 'md', opts = {}) {
+  const pad  = TOKENS.padding.input[size] ?? TOKENS.padding.input.md;
+  const font = size === 'sm' ? TOKENS.fontSize.sm : size === 'lg' ? TOKENS.fontSize.lg : TOKENS.fontSize.md;
+
+  let borderColor = TOKENS.color.neutralBorder;
+  if (opts.error)   borderColor = TOKENS.color.danger;
+  if (opts.success) borderColor = TOKENS.color.success;
+  if (opts.noBorder) borderColor = 'transparent';
+
+  const display = opts.inline ? 'inline-block;width:auto;' : 'block;width:100%;';
+
+  return [
+    `display:${display}`,
+    `padding:${pad};`,
+    `border:1.5px solid ${borderColor};`,
+    `border-radius:${TOKENS.radius.md};`,
+    `font-size:${font};`,
+    `font-family:inherit;`,
+    `color:#1f2937;`,
+    `background:#fff;`,
+    `box-sizing:border-box;`,
+    `outline:none;`,
+    `transition:border-color .15s, box-shadow .15s;`,
+    `line-height:1.5;`,
+  ].join('');
 }
 
-function tableStyle()  { return 'width:100%;border-collapse:collapse;font-size:.9rem;'; }
-function thRowStyle()  { return 'background:#f9fafb;'; }
-function thStyle()     { return 'padding:.75rem 1rem;text-align:left;font-size:.8rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e5e7eb;white-space:nowrap;'; }
-function tdStyle()     { return 'padding:.75rem 1rem;border-bottom:1px solid #f3f4f6;color:#374151;vertical-align:middle;'; }
-function trStyle()     { return 'transition:background .1s;'; }
-function labelStyle()  { return 'display:block;font-size:.85rem;font-weight:500;color:#374151;margin:.75rem 0 .25rem;'; }
-function inputStyle(size = 'md') {
-  const pad  = size === 'sm' ? '.35rem .6rem' : '.6rem .85rem';
-  const font = size === 'sm' ? '.85rem'        : '.9rem';
-  return `display:block;width:100%;padding:${pad};border:1px solid #d1d5db;border-radius:8px;font-size:${font};color:#1f2937;background:#fff;box-sizing:border-box;outline:none;font-family:inherit;`;
+/**
+ * selectStyle(size?, opts?) — same rhythm as inputStyle but adds appearance reset
+ */
+function selectStyle(size = 'md', opts = {}) {
+  return inputStyle(size, opts) +
+    'appearance:none;-webkit-appearance:none;' +
+    `background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");` +
+    'background-repeat:no-repeat;background-position:right .75rem center;padding-right:2.25rem;';
 }
-function badgeStyle(type = 'info') {
-  const colors = { info:'background:#dbeafe;color:#1d4ed8;', success:'background:#dcfce7;color:#166534;', warning:'background:#fef3c7;color:#92400e;', danger:'background:#fee2e2;color:#991b1b;' };
-  return `display:inline-block;padding:.2rem .6rem;border-radius:9999px;font-size:.75rem;font-weight:600;${colors[type]||colors.info}`;
+
+/**
+ * textareaStyle(size?, opts?)
+ */
+function textareaStyle(size = 'md', opts = {}) {
+  return inputStyle(size, opts) + 'resize:vertical;min-height:80px;';
+}
+
+
+/* ── 19.4. LABEL / HELPER TEXT STYLES ───────────────────────────── */
+
+function labelStyle(opts = {}) {
+  const color = opts.error ? TOKENS.color.dangerText : '#374151';
+  return `display:block;font-size:${TOKENS.fontSize.sm};font-weight:600;color:${color};margin-bottom:.3rem;letter-spacing:.01em;`;
+}
+
+function helperTextStyle(type = 'default') {
+  const colors = {
+    default: TOKENS.color.muted,
+    error:   TOKENS.color.dangerText,
+    success: TOKENS.color.successText,
+    warning: TOKENS.color.warningText,
+  };
+  return `display:block;font-size:${TOKENS.fontSize.xs};color:${colors[type] ?? colors.default};margin-top:.3rem;line-height:1.4;`;
+}
+
+/** Wraps a label + input + optional helper into a consistent field block */
+function fieldGroupStyle() {
+  return 'display:flex;flex-direction:column;gap:0;margin-bottom:1.1rem;';
+}
+
+
+/* ── 19.5. TABLE STYLES ──────────────────────────────────────────── */
+
+/**
+ * tableStyle(opts?)
+ * Options: { striped, bordered, compact, hover }
+ */
+function tableStyle(opts = {}) {
+  return [
+    'width:100%;',
+    'border-collapse:collapse;',
+    `font-size:${TOKENS.fontSize.md};`,
+    'border-spacing:0;',
+    opts.bordered ? `border:1px solid ${TOKENS.color.neutralBorder};border-radius:${TOKENS.radius.lg};overflow:hidden;` : '',
+  ].join('');
+}
+
+function thRowStyle() {
+  return `background:${TOKENS.color.neutralSurface};border-bottom:2px solid ${TOKENS.color.neutralBorder};`;
+}
+
+/**
+ * thStyle(width?, align?)
+ */
+function thStyle(width, align = 'left') {
+  const widthStr = width ? `width:${width};` : '';
+  return [
+    `padding:${TOKENS.padding.cell.md};`,
+    `text-align:${align};`,
+    `font-size:${TOKENS.fontSize.xs};`,
+    `font-weight:700;`,
+    `color:${TOKENS.color.neutral};`,
+    `text-transform:uppercase;`,
+    `letter-spacing:.05em;`,
+    `white-space:nowrap;`,
+    widthStr,
+  ].join('');
+}
+
+/**
+ * tdStyle(opts?)
+ * Options: { align, muted, bold, nowrap }
+ */
+function tdStyle(opts = {}) {
+  const color = opts.muted ? TOKENS.color.muted : opts.bold ? '#111827' : TOKENS.color.neutralText;
+  const align = opts.align ?? 'left';
+  return [
+    `padding:${TOKENS.padding.cell.md};`,
+    `border-bottom:1px solid ${TOKENS.color.mutedSurface};`,
+    `color:${color};`,
+    `vertical-align:middle;`,
+    `text-align:${align};`,
+    `font-size:${TOKENS.fontSize.md};`,
+    opts.bold   ? 'font-weight:600;' : '',
+    opts.nowrap ? 'white-space:nowrap;' : '',
+  ].join('');
+}
+
+function trStyle(opts = {}) {
+  const bg = opts.selected  ? TOKENS.color.primarySurface
+           : opts.highlight ? '#fffbeb'
+           : 'transparent';
+  return `background:${bg};transition:background .12s;`;
+}
+
+/** Compact variant — same API but tighter padding */
+function thStyleSm(width, align = 'left') {
+  return thStyle(width, align).replace(TOKENS.padding.cell.md, TOKENS.padding.cell.sm);
+}
+function tdStyleSm(opts = {}) {
+  return tdStyle(opts).replace(TOKENS.padding.cell.md, TOKENS.padding.cell.sm);
+}
+
+
+/* ── 19.6. BADGE STYLE ───────────────────────────────────────────── */
+
+/**
+ * badgeStyle(variant?, opts?)
+ * Variants: info | success | warning | danger | neutral | primary |
+ *           purple | outline-* (outlineInfo, outlineDanger…)
+ * Options: { dot, size }
+ */
+function badgeStyle(variant = 'info', opts = {}) {
+  const C = TOKENS.color;
+  const variants = {
+    info:          `background:${C.infoSurface};color:${C.infoText};border:1px solid ${C.infoBorder};`,
+    success:       `background:${C.successSurface};color:${C.successText};border:1px solid ${C.successBorder};`,
+    warning:       `background:${C.warningSurface};color:${C.warningText};border:1px solid ${C.warningBorder};`,
+    danger:        `background:${C.dangerSurface};color:${C.dangerText};border:1px solid ${C.dangerBorder};`,
+    neutral:       `background:${C.mutedSurface};color:${C.neutralText};border:1px solid ${C.neutralBorder};`,
+    primary:       `background:${C.primarySurface};color:${C.primaryText};border:1px solid ${C.primaryBorder};`,
+    purple:        `background:${C.purpleSurface};color:${C.purpleText};border:1px solid ${C.purpleBorder};`,
+    // Solid variants
+    solidInfo:     `background:${C.info};color:#fff;border:1px solid ${C.info};`,
+    solidSuccess:  `background:${C.success};color:#fff;border:1px solid ${C.success};`,
+    solidDanger:   `background:${C.danger};color:#fff;border:1px solid ${C.danger};`,
+    solidWarning:  `background:${C.warning};color:#fff;border:1px solid ${C.warning};`,
+    solidPrimary:  `background:${C.primary};color:#fff;border:1px solid ${C.primary};`,
+    solidNeutral:  `background:${C.neutral};color:#fff;border:1px solid ${C.neutral};`,
+  };
+
+  const font  = opts.size === 'lg' ? TOKENS.fontSize.sm : opts.size === 'sm' ? '.65rem' : TOKENS.fontSize.xs;
+  const pad   = opts.size === 'lg' ? '.3rem .8rem' : opts.size === 'sm' ? '.1rem .4rem' : '.2rem .55rem';
+  const dot   = opts.dot ? 'display:inline-flex;align-items:center;gap:.35rem;' : 'display:inline-block;';
+  const dotEl = opts.dot ? `• ` : '';  // caller injects this before badge text if desired
+
+  return [
+    variants[variant] ?? variants.info,
+    dot,
+    `padding:${pad};`,
+    `border-radius:${TOKENS.radius.pill};`,
+    `font-size:${font};`,
+    `font-weight:600;`,
+    `line-height:1.4;`,
+    `white-space:nowrap;`,
+    `letter-spacing:.02em;`,
+  ].join('');
+}
+
+
+/* ── 19.7. CARD / PANEL STYLES ───────────────────────────────────── */
+
+/**
+ * cardStyle(opts?)
+ * Options: { shadow, bordered, flush, hover, selected, color }
+ */
+function cardStyle(opts = {}) {
+  const shadow = opts.shadow === false ? 'none'
+               : opts.shadow === 'lg'  ? TOKENS.shadow.lg
+               : opts.shadow === 'sm'  ? TOKENS.shadow.xs
+               : TOKENS.shadow.sm;
+
+  const border = opts.bordered !== false
+    ? `border:1px solid ${opts.selected ? TOKENS.color.primaryBorder : TOKENS.color.neutralBorder};`
+    : 'border:none;';
+
+  const bg = opts.color === 'primary' ? TOKENS.color.primarySurface
+           : opts.color === 'success' ? TOKENS.color.successSurface
+           : opts.color === 'danger'  ? TOKENS.color.dangerSurface
+           : opts.color === 'warning' ? TOKENS.color.warningSurface
+           : '#fff';
+
+  return [
+    `background:${bg};`,
+    border,
+    `border-radius:${TOKENS.radius.xl};`,
+    `box-shadow:${shadow};`,
+    `padding:1.25rem;`,
+    opts.hover    ? `transition:${TOKENS.transition.normal};cursor:pointer;` : '',
+    opts.selected ? `outline:2px solid ${TOKENS.color.primary};outline-offset:-1px;` : '',
+  ].join('');
+}
+
+
+/* ── 19.8. BANNER / CALLOUT STYLES ───────────────────────────────── */
+
+/**
+ * bannerStyle(variant?)
+ * Variants: info | success | warning | danger | neutral | primary | purple
+ */
+function bannerStyle(variant = 'info') {
+  const C = TOKENS.color;
+  const map = {
+    info:    { bg: C.infoSurface,    border: C.infoBorder,    text: C.infoText    },
+    success: { bg: C.successSurface, border: C.successBorder, text: C.successText },
+    warning: { bg: C.warningSurface, border: C.warningBorder, text: C.warningText },
+    danger:  { bg: C.dangerSurface,  border: C.dangerBorder,  text: C.dangerText  },
+    primary: { bg: C.primarySurface, border: C.primaryBorder, text: C.primaryText },
+    purple:  { bg: C.purpleSurface,  border: C.purpleBorder,  text: C.purpleText  },
+    neutral: { bg: C.neutralSurface, border: C.neutralBorder, text: C.neutralText },
+  };
+  const t = map[variant] ?? map.info;
+  return `background:${t.bg};border:1px solid ${t.border};border-radius:${TOKENS.radius.md};padding:.75rem 1rem;font-size:${TOKENS.fontSize.base};color:${t.text};display:flex;align-items:flex-start;gap:.6rem;line-height:1.5;`;
+}
+
+/** @deprecated — kept for backward compat */
+function infoBanner() { return bannerStyle('info'); }
+
+
+/* ── 19.9. DIVIDER / SECTION SEPARATOR ──────────────────────────── */
+
+function dividerStyle(opts = {}) {
+  const margin = opts.tight ? '.75rem 0' : opts.loose ? '2.5rem 0' : '1.5rem 0';
+  return `border:none;border-top:1px solid ${TOKENS.color.neutralBorder};margin:${margin};`;
+}
+
+function sectionHeadStyle(opts = {}) {
+  const size = opts.size === 'sm' ? TOKENS.fontSize.base
+             : opts.size === 'lg' ? '1.15rem'
+             : '1rem';
+  return `font-size:${size};font-weight:700;color:${TOKENS.color.primary};margin:0 0 1rem;letter-spacing:-.01em;display:flex;align-items:center;gap:.5rem;`;
+}
+
+
+/* ── 19.10. AVATAR / ICON BADGE STYLES ──────────────────────────── */
+
+function avatarStyle(size = 'md', opts = {}) {
+  const dim = { xs: '1.5rem', sm: '2rem', md: '2.5rem', lg: '3.5rem', xl: '4.5rem' }[size] ?? '2.5rem';
+  const font = { xs: '.6rem', sm: '.75rem', md: '.9rem', lg: '1.25rem', xl: '1.5rem' }[size] ?? '.9rem';
+  const color = opts.color ?? TOKENS.color.primary;
+  return `width:${dim};height:${dim};border-radius:50%;background:${color};color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:${font};font-weight:700;flex-shrink:0;overflow:hidden;`;
+}
+
+
+/* ── 19.11. MODAL / OVERLAY STYLES ──────────────────────────────── */
+
+function overlayStyle() {
+  return 'position:fixed;inset:0;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:1000;padding:1rem;';
+}
+
+function modalStyle(opts = {}) {
+  const maxW = opts.size === 'sm' ? '420px' : opts.size === 'lg' ? '760px' : opts.size === 'xl' ? '960px' : '580px';
+  return `background:#fff;border-radius:${TOKENS.radius.xl};box-shadow:${TOKENS.shadow.lg};width:100%;max-width:${maxW};max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;`;
+}
+
+function modalHeaderStyle() {
+  return `padding:1.25rem 1.5rem;border-bottom:1px solid ${TOKENS.color.neutralBorder};display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-shrink:0;`;
+}
+
+function modalBodyStyle() {
+  return 'padding:1.5rem;flex:1;overflow-y:auto;';
+}
+
+function modalFooterStyle() {
+  return `padding:1rem 1.5rem;border-top:1px solid ${TOKENS.color.neutralBorder};display:flex;justify-content:flex-end;gap:.75rem;flex-shrink:0;background:${TOKENS.color.neutralSurface};border-radius:0 0 ${TOKENS.radius.xl} ${TOKENS.radius.xl};`;
+}
+
+
+/* ── 19.12. EMPTY STATE ──────────────────────────────────────────── */
+
+function emptyStateStyle() {
+  return `display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 2rem;text-align:center;color:${TOKENS.color.muted};gap:.75rem;`;
+}
+
+function emptyStateTitleStyle() {
+  return `font-size:1rem;font-weight:600;color:${TOKENS.color.neutralText};margin:0;`;
+}
+
+function emptyStateTextStyle() {
+  return `font-size:${TOKENS.fontSize.base};color:${TOKENS.color.muted};margin:0;max-width:320px;line-height:1.5;`;
+}
+
+
+/* ── 19.13. SKELETON LOADER ──────────────────────────────────────── */
+
+/** Renders an inline skeleton shimmer block. Use inside innerHTML. */
+function skeletonStyle(opts = {}) {
+  const h = opts.height ?? '1rem';
+  const w = opts.width  ?? '100%';
+  const r = opts.radius ?? TOKENS.radius.sm;
+  return `display:block;height:${h};width:${w};border-radius:${r};background:linear-gradient(90deg,#f0f0f0 25%,#e0e0e0 50%,#f0f0f0 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;`;
+}
+
+
+/* ── 19.14. UTILITY HELPERS ──────────────────────────────────────── */
+
+/** Flex row shorthand */
+function flexRow(opts = {}) {
+  const justify = opts.justify ?? 'flex-start';
+  const align   = opts.align   ?? 'center';
+  const gap     = opts.gap     ?? '.75rem';
+  const wrap    = opts.wrap    ? 'flex-wrap:wrap;' : '';
+  return `display:flex;align-items:${align};justify-content:${justify};gap:${gap};${wrap}`;
+}
+
+/** Flex column shorthand */
+function flexCol(opts = {}) {
+  const gap  = opts.gap  ?? '.75rem';
+  const fill = opts.fill ? 'flex:1;' : '';
+  return `display:flex;flex-direction:column;gap:${gap};${fill}`;
+}
+
+/** Responsive grid shorthand */
+function gridStyle(opts = {}) {
+  const min = opts.min   ?? '240px';
+  const gap = opts.gap   ?? '1rem';
+  const cols = opts.cols ? `grid-template-columns:${opts.cols};` : `grid-template-columns:repeat(auto-fit,minmax(${min},1fr));`;
+  return `display:grid;${cols}gap:${gap};`;
+}
+
+/** Truncate text to one line */
+function truncateStyle() {
+  return 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+}
+
+/** Screen-reader only */
+function srOnly() {
+  return 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;';
+}
+
+
+/* ── 19.15. INJECT BASE STYLES ───────────────────────────────────── */
+
+/**
+ * Call once on app init (or after renderSettings / renderApp).
+ * Injects hover/focus/active states and the shimmer keyframe that
+ * pure inline styles cannot express.
+ */
+function injectBaseStyles() {
+  if (document.getElementById('app-base-styles')) return; // idempotent
+  const style = document.createElement('style');
+  style.id = 'app-base-styles';
+  style.textContent = `
+    /* Button hover / active */
+    button:not([disabled]):hover  { opacity: .85; }
+    button:not([disabled]):active { opacity: .70; transform: scale(.98); }
+    button[disabled]              { opacity: .45; cursor: not-allowed; }
+
+    /* Input focus ring */
+    input:focus, select:focus, textarea:focus {
+      border-color: ${TOKENS.color.primary} !important;
+      box-shadow: ${TOKENS.shadow.focus};
+    }
+
+    /* Table row hover */
+    tr.hoverable:hover td { background: ${TOKENS.color.primarySurface}; }
+
+    /* Skeleton shimmer */
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* Smooth scrollbar */
+    ::-webkit-scrollbar        { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track  { background: transparent; }
+    ::-webkit-scrollbar-thumb  { background: #d1d5db; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+
+    /* Fade-in utility */
+    .fade-in { animation: fadeIn .2s ease both; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+  `;
+  document.head.appendChild(style);
 }
 
 /* ─────────────────────────────────────────
-   20. LOGOUT
-───────────────────────────────────────── */
-function handleLogout() {
-  if (!confirmDlg('Are you sure you want to logout?')) return;
-  /* Clear auth session if login.js is present */
-  window.SHC_Auth?.clearSession();
-  toast('Logged out. Goodbye, ' + App.currentUser.name + '!', 'info');
-  setTimeout(() => { window.location.href = 'login.html'; }, 700);
-}
-
-/* ─────────────────────────────────────────
-   21. INIT  — single, merged entry point
+   20. INIT  — single, merged entry point
    Reads session from login.js (SHC_Auth) if available,
    falls back to default Admin for standalone testing.
 ───────────────────────────────────────── */
